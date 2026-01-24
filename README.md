@@ -35,7 +35,7 @@
 
 ## 📦 安装说明 (Installation)
 
-1.  下载最新的 `TimelineTagsPro_V12.x.py` 文件。
+1.  下载最新的 `TimelineTagsPro.py` 文件。
 2.  打开 Blender。
 3.  点击菜单栏 **Edit** -> **Preferences**。
 4.  选择左侧的 **Add-ons**。
