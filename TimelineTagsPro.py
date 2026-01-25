@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V23.2",
+    "name": "Timeline Tags Pro V27",
     "author": "Dev_BlenderPy",
-    "version": (23, 2),
+    "version": (27, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "UI微调版：调整顶部工具栏顺序（颜色-同步-保存），全功能稳定版。",
+    "description": "极简UI版：版本管理单行化，按钮方块化，全功能集成。",
     "category": "Animation",
 }
 
@@ -15,7 +15,7 @@ import math
 import time
 import os
 from bpy.props import IntProperty, StringProperty, CollectionProperty, PointerProperty, BoolProperty, FloatVectorProperty, EnumProperty
-from bpy.types import PropertyGroup, UIList, Operator, Panel
+from bpy.types import PropertyGroup, UIList, Operator, Panel, Menu
 from bpy.app.handlers import persistent
 from bpy_extras.io_utils import ImportHelper, ExportHelper
 
@@ -62,7 +62,7 @@ def save_preset_data(preset):
             "summary": item.summary,
             "content": item.content,
             "color": (item.color[0], item.color[1], item.color[2]),
-            "align": item.align_x 
+            # Align is global
         }
         data_list.append(entry)
     preset.storage_file.clear()
@@ -85,8 +85,6 @@ def load_preset_data(preset):
         item.content = entry.get("content", "") 
         col = entry.get("color", (1.0, 1.0, 1.0))
         item.color = (col[0], col[1], col[2])
-        item.align_x = entry.get("align", "LEFT") 
-        
         sync_content_to_lines(item)
 
 def update_preset_name(self, context):
@@ -178,18 +176,6 @@ class TTAG_Item(PropertyGroup):
     content: StringProperty(name="Content", default="") 
     text_lines: CollectionProperty(type=TTAG_TextLine)
     color: FloatVectorProperty(name="Color", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0, description="标签颜色")
-    
-    # 对齐属性
-    align_x: EnumProperty(
-        name="Align",
-        items=[
-            ('LEFT', "Left", "左对齐", 'ALIGN_LEFT', 0),
-            ('CENTER', "Center", "居中", 'ALIGN_CENTER', 1),
-            ('RIGHT', "Right", "右对齐", 'ALIGN_RIGHT', 2),
-        ],
-        default='LEFT',
-        description="文字对齐方式"
-    )
 
 class TTAG_Preset(PropertyGroup):
     name: StringProperty(name="Name", default="New Version", update=update_preset_name, description="版本名")
@@ -198,8 +184,28 @@ class TTAG_Preset(PropertyGroup):
     storage_file: PointerProperty(name="DB File", type=bpy.types.Text)
 
 # =========================================================================
-# 4. 操作符
+# 4. 操作符 & 菜单
 # =========================================================================
+
+class TTAG_OT_Switch_Preset(Operator):
+    bl_idname = "ttag.switch_preset"
+    bl_label = "Switch Preset"
+    bl_description = "切换到此版本"
+    index: IntProperty()
+    def execute(self, context):
+        context.scene.ttag_active_preset_index = self.index
+        return {'FINISHED'}
+
+class TTAG_MT_Preset_List(Menu):
+    bl_label = "Select Version"
+    bl_idname = "TTAG_MT_preset_list"
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        for i, preset in enumerate(scene.ttag_presets):
+            icon = 'CHECKBOX_HLT' if i == scene.ttag_active_preset_index else 'BLANK1'
+            op = layout.operator("ttag.switch_preset", text=preset.name, icon=icon)
+            op.index = i
 
 class TTAG_OT_Insert_Newline(Operator):
     bl_idname = "ttag.insert_newline"
@@ -549,7 +555,9 @@ class TTAG_OT_Generate_Keyframes(Operator):
             
             font_curve = bpy.data.curves.new(type="FONT", name=f"TTAG_Data_{item.frame}")
             font_curve.body = full_text
-            font_curve.align_x = item.align_x
+            
+            # [V24] 使用全局对齐
+            font_curve.align_x = scene.ttag_global_align
             
             # 基础对齐优化
             font_curve.align_y = 'BOTTOM'
@@ -613,7 +621,7 @@ class TTAG_UL_List(UIList):
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V23.2"
+    bl_label = "Timeline Tags Pro V27"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -623,32 +631,34 @@ class TTAG_PT_Panel(Panel):
         layout = self.layout
         scene = context.scene
 
-        # --- Presets ---
+        # --- [V27] 1. Version Manager (Single Row) ---
         box = layout.box()
-        row = box.row()
-        row.label(text="版本管理 (Presets):", icon='PRESET')
+        # Row: Label | Name | Menu | Refresh | Add | Remove
         row = box.row(align=True)
-        if len(scene.ttag_presets) == 0:
-            row.operator("ttag.preset_action", text="新建版本", icon='ADD').action = "ADD"
-        else:
+        row.label(text="版本 (Version):", icon='PRESET')
+        
+        if len(scene.ttag_presets) > 0:
             active_preset = get_active_preset(scene)
             if active_preset:
                 row.prop(active_preset, "name", text="")
+                row.menu("TTAG_MT_preset_list", text="", icon='DOWNARROW_HLT')
                 row.operator("ttag.load_from_db", text="", icon='FILE_REFRESH')
-            row.separator()
-            row.operator("ttag.preset_action", text="", icon='ADD').action = "ADD"
-            row.operator("ttag.preset_action", text="", icon='TRASH').action = "REMOVE"
-            sub = row.row(align=True)
-            sub.prop(scene, "ttag_active_preset_index", text="Idx")
+        else:
+            row.label(text="无预设")
+            
+        # Add/Remove (Icons Only) attached to same row
+        row.operator("ttag.preset_action", text="", icon='ADD').action = "ADD"
+        row.operator("ttag.preset_action", text="", icon='TRASH').action = "REMOVE"
 
+        # Safe Exit
         active_preset = get_active_preset(scene)
         if not active_preset: return
 
         layout.separator()
 
-        # --- [V23.2] Header: Color first, Sync second ---
+        # --- 2. Global Settings ---
         row = layout.row(align=True)
-        row.label(text="标签管理 (Tag Manager)", icon='TAG')
+        row.label(text="设置 (Settings):", icon='PREFERENCES')
         
         sub = row.row(align=True)
         sub.alignment = 'RIGHT'
@@ -656,7 +666,7 @@ class TTAG_PT_Panel(Panel):
         sub.prop(scene, "ttag_live_sync", text="", icon='TIME', toggle=True) # [2] Sync
         sub.operator("ttag.save_ui", text="", icon='FILE_TICK') # [3] Save
 
-        # --- List ---
+        # --- 3. Data List ---
         row = layout.row()
         row.template_list("TTAG_UL_List", "", active_preset, "items", active_preset, "active_item_index")
         
@@ -671,7 +681,7 @@ class TTAG_PT_Panel(Panel):
 
         layout.separator()
         
-        # --- Edit Area ---
+        # --- 4. Editor Area ---
         if active_preset.active_item_index >= 0 and len(active_preset.items) > 0:
             safe_idx = active_preset.active_item_index
             if safe_idx >= len(active_preset.items): safe_idx = len(active_preset.items) - 1
@@ -681,16 +691,12 @@ class TTAG_PT_Panel(Panel):
             box = layout.box()
             col = box.column(align=True)
             
-            # Header
             col.label(text="内容编辑 (Content Edit):", icon='TEXT')
             
-            # Tool Row
             row_tools = col.row(align=True)
             row_tools.scale_y = 1.2
             row_tools.operator("ttag.copy_clipboard", text="复制", icon='COPYDOWN')
             row_tools.operator("ttag.paste_clipboard", text="粘贴", icon='PASTEDOWN')
-            row_tools.separator()
-            row_tools.prop(item, "align_x", text="", expand=True)
             
             col.separator()
             
@@ -707,14 +713,17 @@ class TTAG_PT_Panel(Panel):
 
         layout.separator()
         
+        # --- 5. Output Area ---
         box = layout.box()
         box.label(text="输出 (Output):", icon='OUTPUT')
         row = box.row(align=True)
         row.operator("ttag.export_srt", icon='TEXT', text="导出 SRT")
         row.operator("ttag.import_srt", icon='IMPORT', text="导入 SRT")
         
-        row = box.row()
+        row = box.row(align=True)
         row.prop(scene, "ttag_overwrite", text="覆盖旧烘焙")
+        row.prop(scene, "ttag_global_align", text="", expand=True)
+        
         box.operator("ttag.generate_keyframes", icon='SHADING_BBOX', text=f"烘焙: {active_preset.name}")
 
 # =========================================================================
@@ -725,7 +734,9 @@ classes = (
     TTAG_TextLine,
     TTAG_Item, TTAG_Preset,
     TTAG_OT_Insert_Newline, TTAG_OT_Remove_Text_Line,
-    TTAG_OT_Preset_Action, TTAG_OT_Load_From_DB, TTAG_OT_Export_SRT, TTAG_OT_Import_SRT,
+    TTAG_OT_Preset_Action, TTAG_OT_Switch_Preset,
+    TTAG_MT_Preset_List,
+    TTAG_OT_Load_From_DB, TTAG_OT_Export_SRT, TTAG_OT_Import_SRT,
     TTAG_OT_List_Action, TTAG_OT_Copy_Clipboard, TTAG_OT_Paste_Clipboard, TTAG_OT_Save_UI_Changes,
     TTAG_OT_Sort_By_Frame, TTAG_OT_Generate_Keyframes,
     TTAG_UL_List, TTAG_PT_Panel,
@@ -752,6 +763,18 @@ def register():
     
     bpy.types.Scene.ttag_default_color = FloatVectorProperty(name="Default Color", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0, description="新建标签的默认颜色")
     bpy.types.Scene.ttag_preview_rows = IntProperty(name="Preview Rows", default=5, min=1, max=50, description="预览框最大显示行数")
+    
+    bpy.types.Scene.ttag_global_align = EnumProperty(
+        name="Global Align",
+        items=[
+            ('LEFT', "Left", "左对齐", 'ALIGN_LEFT', 0),
+            ('CENTER', "Center", "居中", 'ALIGN_CENTER', 1),
+            ('RIGHT', "Right", "右对齐", 'ALIGN_RIGHT', 2),
+        ],
+        default='CENTER',
+        description="全局文字对齐方式（影响烘焙结果）"
+    )
+
     if ttag_sync_handler not in bpy.app.handlers.frame_change_post: bpy.app.handlers.frame_change_post.append(ttag_sync_handler)
 
 def unregister():
@@ -765,6 +788,7 @@ def unregister():
     del bpy.types.Scene.ttag_lock_sync
     del bpy.types.Scene.ttag_default_color
     del bpy.types.Scene.ttag_preview_rows
+    del bpy.types.Scene.ttag_global_align
 
 if __name__ == "__main__":
     register()
