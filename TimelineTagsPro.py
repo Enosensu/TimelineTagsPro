@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V32",
+    "name": "Timeline Tags Pro V35",
     "author": "Dev_BlenderPy",
-    "version": (32, 0),
+    "version": (35, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "UI完美版：利用自动扩张特性实现右侧吸附，覆盖按钮方块化。",
+    "description": "纯净版：移除冗余代码，保留核心架构与V34的UI布局。",
     "category": "Animation",
 }
 
@@ -14,7 +14,7 @@ import re
 import math
 import time
 import os
-from bpy.props import IntProperty, StringProperty, CollectionProperty, PointerProperty, BoolProperty, FloatVectorProperty, EnumProperty
+from bpy.props import IntProperty, StringProperty, CollectionProperty, PointerProperty, BoolProperty, FloatVectorProperty, EnumProperty, FloatProperty
 from bpy.types import PropertyGroup, UIList, Operator, Panel, Menu
 from bpy.app.handlers import persistent
 from bpy_extras.io_utils import ImportHelper, ExportHelper
@@ -473,7 +473,7 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
         for match in matches:
             start_tc = match[1]
             content = match[3].strip()
-            # [V27.1 Fix] 使用 round() 防止精度丢失导致的漂移
+            # [V27.1] 使用 round() 防止精度丢失导致的漂移
             frame = timecode_to_frame(start_tc, fps)
             item = preset.items.add()
             item.frame = frame
@@ -517,18 +517,18 @@ class TTAG_OT_Generate_Keyframes(Operator):
         if not preset: return {'CANCELLED'}
         save_preset_data(preset) 
         
-        # [V28] 预加载字体 (Safe Check)
+        # [V32.1] 字体加载逻辑
         loaded_font = None
-        font_path = scene.ttag_font_path.strip()
-        if font_path and os.path.exists(font_path):
-            try:
-                font_name = os.path.basename(font_path)
-                if font_name not in bpy.data.fonts:
-                    bpy.data.fonts.load(font_path)
-                if font_name in bpy.data.fonts:
-                    loaded_font = bpy.data.fonts[font_name]
-            except:
-                self.report({'WARNING'}, "字体加载失败，将使用默认字体")
+        raw_path = scene.ttag_font_path.strip()
+        if raw_path:
+            abs_path = bpy.path.abspath(raw_path)
+            if os.path.exists(abs_path):
+                try:
+                    loaded_font = bpy.data.fonts.load(abs_path, check_existing=True)
+                except Exception as e:
+                    self.report({'WARNING'}, f"字体加载失败: {str(e)}")
+            else:
+                self.report({'WARNING'}, f"找不到字体文件: {abs_path}")
         
         safe_name = preset.name.strip().replace(" ", "_")
         if not safe_name: safe_name = "Unnamed"
@@ -568,11 +568,13 @@ class TTAG_OT_Generate_Keyframes(Operator):
             font_curve = bpy.data.curves.new(type="FONT", name=f"TTAG_Data_{item.frame}")
             font_curve.body = full_text
             
-            # [V29] 应用自定义字体
             if loaded_font:
                 font_curve.font = loaded_font
                 
             font_curve.align_x = scene.ttag_global_align
+            # [V33/34] 应用行距 (无限制)
+            font_curve.space_line = scene.ttag_line_spacing
+            
             font_curve.align_y = 'BOTTOM'
             font_curve.extrude = 0.02
             
@@ -634,7 +636,7 @@ class TTAG_UL_List(UIList):
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V32"
+    bl_label = "Timeline Tags Pro V35"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -723,32 +725,37 @@ class TTAG_PT_Panel(Panel):
 
         layout.separator()
         
-        # --- 5. Output Area (V32 Layout) ---
+        # --- 5. Output Area ---
         box = layout.box()
         box.label(text="输出 (Output):", icon='OUTPUT')
         
-        # Row 1: SRT Import/Export (Full width, scaled)
+        # Row 1: SRT Import/Export (Full width, scaled 1.2)
         row = box.row(align=True)
         row.scale_y = 1.2
         row.operator("ttag.export_srt", icon='TEXT', text="导出 SRT")
         row.operator("ttag.import_srt", icon='IMPORT', text="导入 SRT")
         
-        # Row 2: Font Path (Expanding) | Overwrite (Square Icon) | Align (Compact)
-        # [V32] Removed split(), utilizing default layout expansion
+        # Row 2: [Font (60%)] [Spacing] [Overwrite] [Align]
+        # [V33/34] Layout: Auto-expanding Font Box logic
         row = box.row(align=True)
         
-        # Font Picker (Will auto-expand)
-        row.prop(scene, "ttag_font_path", text="")
+        # Font Picker & Line Spacing (Left/Middle)
+        # Using split to reserve space for the path + value
+        sub = row.split(factor=0.60, align=True) 
+        sub.prop(scene, "ttag_font_path", text="")
         
-        # Overwrite Button (Square toggle)
-        row.prop(scene, "ttag_overwrite", text="", icon='FILE_REFRESH', toggle=True)
+        sub_right = sub.row(align=True)
+        sub_right.prop(scene, "ttag_line_spacing", text="行距")
         
-        # Align Buttons
-        row.prop(scene, "ttag_global_align", text="", expand=True)
+        # Overwrite (Square Icon)
+        sub_right.prop(scene, "ttag_overwrite", text="", icon='FILE_REFRESH', toggle=True)
         
-        # Row 3: Bake (Height Adjusted to 1.2)
+        # Align Buttons (Compact)
+        sub_right.prop(scene, "ttag_global_align", text="", expand=True)
+        
+        # Row 3: Bake (Height 1.2 standardized)
         row = box.row()
-        row.scale_y = 1.2 
+        row.scale_y = 1.2
         row.operator("ttag.generate_keyframes", icon='SHADING_BBOX', text=f"烘焙: {active_preset.name}")
 
 # =========================================================================
@@ -787,7 +794,8 @@ def register():
     bpy.types.Scene.ttag_lock_sync = BoolProperty(default=False)
     
     bpy.types.Scene.ttag_default_color = FloatVectorProperty(name="Default Color", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0, description="新建标签的默认颜色")
-    bpy.types.Scene.ttag_preview_rows = IntProperty(name="Preview Rows", default=5, min=1, max=50, description="预览框最大显示行数")
+    
+    # [V35 Removed] ttag_preview_rows is redundant
     
     bpy.types.Scene.ttag_global_align = EnumProperty(
         name="Global Align",
@@ -800,11 +808,17 @@ def register():
         description="全局文字对齐方式（影响烘焙结果）"
     )
     
-    # [V32] 烘焙字体
     bpy.types.Scene.ttag_font_path = StringProperty(
         name="烘焙字体",
         description="烘焙字体文件路径 (留空使用默认)",
         subtype='FILE_PATH'
+    )
+    
+    # [V34] 行距 (无限制)
+    bpy.types.Scene.ttag_line_spacing = FloatProperty(
+        name="行距",
+        default=1.0,
+        description="文字行间距 (Space Line)"
     )
 
     if ttag_sync_handler not in bpy.app.handlers.frame_change_post: bpy.app.handlers.frame_change_post.append(ttag_sync_handler)
@@ -819,9 +833,10 @@ def unregister():
     del bpy.types.Scene.ttag_is_syncing_from_timeline
     del bpy.types.Scene.ttag_lock_sync
     del bpy.types.Scene.ttag_default_color
-    del bpy.types.Scene.ttag_preview_rows
+    # del bpy.types.Scene.ttag_preview_rows # Removed
     del bpy.types.Scene.ttag_global_align
     del bpy.types.Scene.ttag_font_path
+    del bpy.types.Scene.ttag_line_spacing
 
 if __name__ == "__main__":
     register()
