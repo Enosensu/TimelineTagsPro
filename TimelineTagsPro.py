@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V16",
+    "name": "Timeline Tags Pro V23.2",
     "author": "Dev_BlenderPy",
-    "version": (16, 0),
+    "version": (23, 2),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "最终完善版：支持SRT外部文件导入导出，UI调整，全功能集成",
+    "description": "UI微调版：调整顶部工具栏顺序（颜色-同步-保存），全功能稳定版。",
     "category": "Animation",
 }
 
@@ -14,35 +14,61 @@ import re
 import math
 import time
 import os
-from bpy.props import IntProperty, StringProperty, CollectionProperty, PointerProperty, BoolProperty, FloatVectorProperty
+from bpy.props import IntProperty, StringProperty, CollectionProperty, PointerProperty, BoolProperty, FloatVectorProperty, EnumProperty
 from bpy.types import PropertyGroup, UIList, Operator, Panel
 from bpy.app.handlers import persistent
-# 引入 ExportHelper 和 ImportHelper
 from bpy_extras.io_utils import ImportHelper, ExportHelper
 
 # =========================================================================
-# 1. 核心逻辑：数据序列化 (JSON IO)
+# 1. 核心逻辑：数据同步与序列化
 # =========================================================================
 
+def sync_lines_to_content(item):
+    """[UI -> Data] 将多行列表合并为单个字符串"""
+    lines = [line.body for line in item.text_lines]
+    item["content"] = "\n".join(lines) 
+
+def sync_content_to_lines(item):
+    """[Data -> UI] 将 content 拆分到多行"""
+    raw = item.get("content", "")
+    item.text_lines.clear()
+    
+    if not raw:
+        item.text_lines.add()
+        return
+
+    lines = raw.split("\n")
+    for txt in lines:
+        new_line = item.text_lines.add()
+        new_line.body = txt
+
+def update_line_body(self, context):
+    """当文本被修改时触发同步"""
+    scene = context.scene
+    preset = get_active_preset(scene)
+    if preset and 0 <= preset.active_item_index < len(preset.items):
+        item = preset.items[preset.active_item_index]
+        sync_lines_to_content(item)
+
 def save_preset_data(preset):
-    """将当前预设数据写入文本块"""
     if not preset.storage_file: return
     data_list = []
-    # 排序保证顺序
     sorted_items = sorted(preset.items, key=lambda x: x.frame)
     for item in sorted_items:
+        if len(item.text_lines) > 0:
+            sync_lines_to_content(item)
         entry = {
             "frame": item.frame,
             "summary": item.summary,
             "content": item.content,
-            "color": (item.color[0], item.color[1], item.color[2])
+            "color": (item.color[0], item.color[1], item.color[2]),
+            "align": item.align_x 
         }
         data_list.append(entry)
     preset.storage_file.clear()
     preset.storage_file.write(json.dumps(data_list, indent=2, ensure_ascii=False))
 
 def load_preset_data(preset):
-    """从文本块读取数据"""
     if not preset.storage_file: return
     raw_text = preset.storage_file.as_string()
     if not raw_text.strip(): return
@@ -56,25 +82,26 @@ def load_preset_data(preset):
         item = preset.items.add()
         item.frame = entry.get("frame", 1)
         item.summary = entry.get("summary", "Tag")
-        item.content = entry.get("content", "")
+        item.content = entry.get("content", "") 
         col = entry.get("color", (1.0, 1.0, 1.0))
         item.color = (col[0], col[1], col[2])
+        item.align_x = entry.get("align", "LEFT") 
+        
+        sync_content_to_lines(item)
 
 def update_preset_name(self, context):
-    """预设改名回调"""
     if self.storage_file:
         safe_name = self.name.strip().replace(" ", "_")
         if not safe_name: safe_name = "Unnamed"
         self.storage_file.name = f"TTAG_DB_{safe_name}.json"
 
 # =========================================================================
-# 2. 辅助函数 & 同步逻辑
+# 2. 辅助函数
 # =========================================================================
 
 def get_active_preset(scene):
     count = len(scene.ttag_presets)
-    if count == 0:
-        return None
+    if count == 0: return None
     safe_idx = scene.ttag_active_preset_index
     if safe_idx >= count: safe_idx = count - 1
     if safe_idx < 0: safe_idx = 0
@@ -105,12 +132,13 @@ def timecode_to_frame(timecode, fps):
 
 def update_item_index(self, context):
     scene = context.scene
+    if getattr(scene, "ttag_lock_sync", False): return
     if getattr(scene, "ttag_is_syncing_from_timeline", False): return
     if not getattr(scene, "ttag_live_sync", False): return
     
     active_preset = get_active_preset(scene)
     if self != active_preset: return
-
+    
     idx = self.active_item_index
     if 0 <= idx < len(self.items):
         scene.frame_current = self.items[idx].frame
@@ -118,19 +146,18 @@ def update_item_index(self, context):
 @persistent
 def ttag_sync_handler(scene):
     if not getattr(scene, "ttag_live_sync", False): return
+    if getattr(scene, "ttag_lock_sync", False): return
+    
     preset = get_active_preset(scene)
     if not preset or len(preset.items) == 0: return
-
     curr = scene.frame_current
     best_idx = -1
     max_frame = -999999
-
     for i, item in enumerate(preset.items):
         if item.frame <= curr:
             if item.frame > max_frame:
                 max_frame = item.frame
                 best_idx = i
-    
     if not getattr(scene, "ttag_is_syncing_from_timeline", False):
         if best_idx != -1 and preset.active_item_index != best_idx:
             scene.ttag_is_syncing_from_timeline = True 
@@ -141,14 +168,31 @@ def ttag_sync_handler(scene):
 # 3. 数据结构
 # =========================================================================
 
+class TTAG_TextLine(PropertyGroup):
+    """单行文本数据"""
+    body: StringProperty(name="Text", default="", update=update_line_body, description="单行文本内容")
+
 class TTAG_Item(PropertyGroup):
-    frame: IntProperty(name="Frame", default=1, description="标签所在的帧号")
-    summary: StringProperty(name="Label", default="Tag", description="标签简略标题")
-    content: StringProperty(name="Content", default="", description="详细的字幕内容") 
+    frame: IntProperty(name="Frame", default=1, description="标签帧号")
+    summary: StringProperty(name="Label", default="Tag", description="标签标题")
+    content: StringProperty(name="Content", default="") 
+    text_lines: CollectionProperty(type=TTAG_TextLine)
     color: FloatVectorProperty(name="Color", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0, description="标签颜色")
+    
+    # 对齐属性
+    align_x: EnumProperty(
+        name="Align",
+        items=[
+            ('LEFT', "Left", "左对齐", 'ALIGN_LEFT', 0),
+            ('CENTER', "Center", "居中", 'ALIGN_CENTER', 1),
+            ('RIGHT', "Right", "右对齐", 'ALIGN_RIGHT', 2),
+        ],
+        default='LEFT',
+        description="文字对齐方式"
+    )
 
 class TTAG_Preset(PropertyGroup):
-    name: StringProperty(name="Name", default="New Version", update=update_preset_name, description="版本名称")
+    name: StringProperty(name="Name", default="New Version", update=update_preset_name, description="版本名")
     items: CollectionProperty(type=TTAG_Item)
     active_item_index: IntProperty(default=0, update=update_item_index)
     storage_file: PointerProperty(name="DB File", type=bpy.types.Text)
@@ -157,66 +201,115 @@ class TTAG_Preset(PropertyGroup):
 # 4. 操作符
 # =========================================================================
 
+class TTAG_OT_Insert_Newline(Operator):
+    bl_idname = "ttag.insert_newline"
+    bl_label = "插入新行"
+    bl_description = "在此行下方插入新文本行"
+    target_index: IntProperty(default=-1)
+
+    def execute(self, context):
+        preset = get_active_preset(context.scene)
+        if not preset or len(preset.items) == 0: return {'CANCELLED'}
+        item = preset.items[preset.active_item_index]
+        
+        insert_pos = 0
+        current_len = len(item.text_lines)
+        if self.target_index == -1: insert_pos = current_len
+        else: insert_pos = self.target_index + 1
+        if insert_pos > current_len: insert_pos = current_len
+        
+        item.text_lines.add()
+        new_idx = len(item.text_lines) - 1
+        item.text_lines.move(new_idx, insert_pos)
+        
+        sync_lines_to_content(item)
+        save_preset_data(preset)
+        return {'FINISHED'}
+
+class TTAG_OT_Remove_Text_Line(Operator):
+    bl_idname = "ttag.remove_text_line"
+    bl_label = "删除行"
+    bl_description = "删除此行"
+    index: IntProperty()
+
+    def execute(self, context):
+        preset = get_active_preset(context.scene)
+        if not preset: return {'CANCELLED'}
+        item = preset.items[preset.active_item_index]
+        
+        if len(item.text_lines) > 0 and self.index < len(item.text_lines):
+            item.text_lines.remove(self.index)
+            if len(item.text_lines) == 0:
+                item.text_lines.add()
+            sync_lines_to_content(item)
+            save_preset_data(preset)
+        return {'FINISHED'}
+
 class TTAG_OT_Preset_Action(Operator):
     bl_idname = "ttag.preset_action"
     bl_label = "Preset Action"
-    bl_description = "新建或删除一个字幕版本预设"
+    bl_description = "新建/删除版本"
     action: StringProperty(default="ADD")
 
     def execute(self, context):
         scene = context.scene
-        if self.action == "ADD":
-            new_preset = scene.ttag_presets.add()
-            count = len(scene.ttag_presets)
-            name = f"Version_{count}"
-            new_preset.name = name
-            scene.ttag_active_preset_index = count - 1
-            fname = f"TTAG_DB_{name}.json"
-            if fname not in bpy.data.texts:
-                new_preset.storage_file = bpy.data.texts.new(fname)
-            else:
-                new_preset.storage_file = bpy.data.texts[fname]
-                load_preset_data(new_preset)
-        elif self.action == "REMOVE":
-            if len(scene.ttag_presets) > 0:
-                idx = scene.ttag_active_preset_index
-                preset_to_remove = scene.ttag_presets[idx]
-                file_ref = preset_to_remove.storage_file
-                if file_ref:
-                    file_name = file_ref.name
-                    bpy.data.texts.remove(file_ref, do_unlink=True)
-                    self.report({'INFO'}, f"已清除后台文件: {file_name}")
-                scene.ttag_presets.remove(idx)
-                scene.ttag_active_preset_index = max(0, idx - 1)
+        scene.ttag_lock_sync = True 
+        try:
+            if self.action == "ADD":
+                new_preset = scene.ttag_presets.add()
+                count = len(scene.ttag_presets)
+                name = f"Version_{count}"
+                new_preset.name = name
+                scene.ttag_active_preset_index = count - 1
+                fname = f"TTAG_DB_{name}.json"
+                if fname not in bpy.data.texts:
+                    new_preset.storage_file = bpy.data.texts.new(fname)
+                else:
+                    new_preset.storage_file = bpy.data.texts[fname]
+                    load_preset_data(new_preset)
+            elif self.action == "REMOVE":
+                if len(scene.ttag_presets) > 0:
+                    idx = scene.ttag_active_preset_index
+                    preset_to_remove = scene.ttag_presets[idx]
+                    file_ref = preset_to_remove.storage_file
+                    if file_ref:
+                        file_name = file_ref.name
+                        bpy.data.texts.remove(file_ref, do_unlink=True)
+                        self.report({'INFO'}, f"已清除后台文件: {file_name}")
+                    scene.ttag_presets.remove(idx)
+                    scene.ttag_active_preset_index = max(0, idx - 1)
+        finally:
+            scene.ttag_lock_sync = False
         return {'FINISHED'}
 
 class TTAG_OT_Load_From_DB(Operator):
     bl_idname = "ttag.load_from_db"
     bl_label = "从数据库加载"
-    bl_description = "如果你手动修改了后台文本文件，点击此按钮刷新列表"
+    bl_description = "刷新列表"
     def execute(self, context):
         preset = get_active_preset(context.scene)
         if preset and preset.storage_file:
             load_preset_data(preset)
-            self.report({'INFO'}, "已刷新数据")
+            self.report({'INFO'}, "已刷新")
         return {'FINISHED'}
 
 class TTAG_OT_Copy_Clipboard(Operator):
     bl_idname = "ttag.copy_clipboard"
     bl_label = "复制"
-    bl_description = "将当前选中标签的文本内容复制到系统剪贴板"
+    bl_description = "复制内容"
     def execute(self, context):
         preset = get_active_preset(context.scene)
         if not preset or len(preset.items) == 0: return {'CANCELLED'}
         item = preset.items[preset.active_item_index]
+        sync_lines_to_content(item)
         context.window_manager.clipboard = item.content
-        self.report({'INFO'}, "已复制内容")
+        self.report({'INFO'}, "已复制")
         return {'FINISHED'}
 
 class TTAG_OT_Paste_Clipboard(Operator):
     bl_idname = "ttag.paste_clipboard"
     bl_label = "粘贴"
-    bl_description = "将剪贴板内容覆盖到当前标签，并自动保存"
+    bl_description = "粘贴内容"
     def execute(self, context):
         preset = get_active_preset(context.scene)
         if not preset or len(preset.items) == 0: return {'CANCELLED'}
@@ -224,14 +317,15 @@ class TTAG_OT_Paste_Clipboard(Operator):
         if content is None: return {'CANCELLED'}
         item = preset.items[preset.active_item_index]
         item.content = content
+        sync_content_to_lines(item)
         save_preset_data(preset)
-        self.report({'INFO'}, "已粘贴并保存")
+        self.report({'INFO'}, "已粘贴")
         return {'FINISHED'}
 
 class TTAG_OT_List_Action(Operator):
     bl_idname = "ttag.list_action"
     bl_label = "List Action"
-    bl_description = "列表操作：添加、删除或移动标签"
+    bl_description = "列表操作"
     action: StringProperty(default="ADD")
 
     def execute(self, context):
@@ -241,66 +335,72 @@ class TTAG_OT_List_Action(Operator):
         list_len = len(preset.items)
         idx = preset.active_item_index
 
-        if self.action == "ADD":
-            item = preset.items.add()
-            item.frame = scene.frame_current
-            item.summary = f"F{item.frame}"
-            item.color = scene.ttag_default_color
-            item.content = "" 
-            preset.active_item_index = list_len 
-        elif self.action == "REMOVE":
-            if list_len > 0:
-                preset.items.remove(idx)
-                preset.active_item_index = max(0, idx - 1)
-        elif self.action == "UP":
-            if idx > 0:
-                preset.items.move(idx, idx - 1)
-                preset.active_item_index -= 1 
-        elif self.action == "DOWN":
-            if idx < list_len - 1:
-                preset.items.move(idx, idx + 1)
-                preset.active_item_index += 1 
-        save_preset_data(preset)
+        scene.ttag_lock_sync = True
+        try:
+            if self.action == "ADD":
+                item = preset.items.add()
+                item.frame = scene.frame_current
+                item.summary = f"F{item.frame}"
+                item.color = scene.ttag_default_color
+                item.content = "" 
+                sync_content_to_lines(item) 
+                preset.active_item_index = list_len 
+            elif self.action == "REMOVE":
+                if list_len > 0:
+                    preset.items.remove(idx)
+                    preset.active_item_index = max(0, idx - 1)
+            elif self.action == "UP":
+                if idx > 0:
+                    preset.items.move(idx, idx - 1)
+                    preset.active_item_index -= 1 
+            elif self.action == "DOWN":
+                if idx < list_len - 1:
+                    preset.items.move(idx, idx + 1)
+                    preset.active_item_index += 1 
+            save_preset_data(preset)
+        finally:
+            scene.ttag_lock_sync = False
         return {'FINISHED'}
 
 class TTAG_OT_Save_UI_Changes(Operator):
     bl_idname = "ttag.save_ui"
     bl_label = "Save Changes"
-    bl_description = "将列表中的修改（如改名、改色）强制保存到后台数据库文件"
+    bl_description = "手动保存"
     def execute(self, context):
         preset = get_active_preset(context.scene)
         if preset: 
             save_preset_data(preset)
-            self.report({'INFO'}, "数据已保存")
+            self.report({'INFO'}, "已保存")
         return {'FINISHED'}
 
 class TTAG_OT_Sort_By_Frame(Operator):
     bl_idname = "ttag.sort_by_frame"
     bl_label = "排序"
-    bl_description = "按帧号从小到大重新排列所有标签"
+    bl_description = "按帧号排序"
     def execute(self, context):
         preset = get_active_preset(context.scene)
         if not preset: return {'CANCELLED'}
-        n = len(preset.items)
-        for i in range(n):
-            min_idx = i
-            for j in range(i + 1, n):
-                if preset.items[j].frame < preset.items[min_idx].frame:
-                    min_idx = j
-            if min_idx != i:
-                preset.items.move(min_idx, i)
-        save_preset_data(preset)
+        
+        scene = context.scene
+        scene.ttag_lock_sync = True 
+        try:
+            n = len(preset.items)
+            for i in range(n):
+                min_idx = i
+                for j in range(i + 1, n):
+                    if preset.items[j].frame < preset.items[min_idx].frame:
+                        min_idx = j
+                if min_idx != i:
+                    preset.items.move(min_idx, i)
+            save_preset_data(preset)
+        finally:
+            scene.ttag_lock_sync = False
         return {'FINISHED'}
 
 class TTAG_OT_Export_SRT(Operator, ExportHelper):
-    """
-    [V16.0] SRT 导出功能：支持文件浏览器选择保存路径
-    """
     bl_idname = "ttag.export_srt"
     bl_label = "导出 SRT 文件"
-    bl_description = "将当前列表导出为外部 SRT 文件"
-    
-    # ExportHelper 属性
+    bl_description = "导出SRT"
     filename_ext = ".srt"
     filter_glob: StringProperty(default="*.srt", options={'HIDDEN'})
 
@@ -308,15 +408,14 @@ class TTAG_OT_Export_SRT(Operator, ExportHelper):
         scene = context.scene
         preset = get_active_preset(scene)
         if not preset: return {'CANCELLED'}
-        
         fps = scene.render.fps / scene.render.fps_base
         filepath = self.filepath
         
         sorted_items = sorted(preset.items, key=lambda x: x.frame)
         srt_content = ""
         counter = 1
-        
         for i, item in enumerate(sorted_items):
+            sync_lines_to_content(item)
             content = item.content.strip()
             if not content: continue
             start_time = frame_to_timecode(item.frame, fps)
@@ -331,17 +430,14 @@ class TTAG_OT_Export_SRT(Operator, ExportHelper):
                 f.write(srt_content)
             self.report({'INFO'}, f"导出成功: {filepath}")
         except Exception as e:
-            self.report({'ERROR'}, f"写入文件失败: {str(e)}")
+            self.report({'ERROR'}, f"写入失败: {str(e)}")
             return {'CANCELLED'}
-            
         return {'FINISHED'}
 
 class TTAG_OT_Import_SRT(Operator, ImportHelper):
     bl_idname = "ttag.import_srt"
     bl_label = "导入 SRT 文件"
-    bl_description = "选择一个外部 .srt 文件导入，将自动按帧率转换时间码"
-    
-    # ImportHelper 属性
+    bl_description = "导入SRT"
     filter_glob: StringProperty(default="*.srt", options={'HIDDEN'})
     filename_ext: StringProperty(default=".srt", options={'HIDDEN'})
 
@@ -349,28 +445,23 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
         scene = context.scene
         preset = get_active_preset(scene)
         if not preset: 
-            self.report({'ERROR'}, "请先创建一个版本预设")
+            self.report({'ERROR'}, "请先创建版本")
             return {'CANCELLED'}
-        
         filepath = self.filepath
-        if not os.path.exists(filepath):
-            self.report({'ERROR'}, "文件不存在")
-            return {'CANCELLED'}
+        if not os.path.exists(filepath): return {'CANCELLED'}
 
         try:
-            # 尝试使用 utf-8-sig 以兼容带 BOM 的文件
             with open(filepath, 'r', encoding='utf-8-sig') as f:
                 raw_text = f.read()
         except Exception as e:
-            self.report({'ERROR'}, f"读取文件失败: {str(e)}")
+            self.report({'ERROR'}, f"读取失败: {str(e)}")
             return {'CANCELLED'}
 
         fps = scene.render.fps / scene.render.fps_base
         pattern = re.compile(r'(\d+)\s*\n\s*(\d{2}:\d{2}:\d{2}[,:]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,:]\d{3})\s*\n(.*?)(?=\n\s*\d+\s*\n|\Z)', re.DOTALL)
         matches = pattern.findall(raw_text)
-        
         if not matches:
-            self.report({'WARNING'}, "未识别到有效的 SRT 内容")
+            self.report({'WARNING'}, "无效SRT")
             return {'CANCELLED'}
         
         preset.items.clear()
@@ -383,15 +474,18 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
             item.content = content
             item.summary = f"F{frame}"
             item.color = scene.ttag_default_color
+            sync_content_to_lines(item) 
             
         save_preset_data(preset)
-        self.report({'INFO'}, f"成功导入 {len(matches)} 条字幕")
+        self.report({'INFO'}, f"导入 {len(matches)} 条")
         return {'FINISHED'}
 
 class TTAG_OT_Generate_Keyframes(Operator):
     bl_idname = "ttag.generate_keyframes"
     bl_label = "烘焙当前版本"
-    bl_description = "将当前版本的所有标签生成为3D物体。不同版本会生成独立的根物体"
+    bl_description = "生成3D物体"
+    bl_options = {'REGISTER', 'UNDO'} 
+
     def get_or_create_material(self, name, color):
         mat = bpy.data.materials.get(name)
         if mat is None: mat = bpy.data.materials.new(name=name)
@@ -410,9 +504,14 @@ class TTAG_OT_Generate_Keyframes(Operator):
 
     def execute(self, context):
         scene = context.scene
+        # 安全性更新
+        if context.view_layer:
+            context.view_layer.update()
+            
         preset = get_active_preset(scene)
         if not preset: return {'CANCELLED'}
         save_preset_data(preset) 
+        
         safe_name = preset.name.strip().replace(" ", "_")
         if not safe_name: safe_name = "Unnamed"
         coll_name = f"TTAG_Output_{safe_name}"
@@ -432,7 +531,10 @@ class TTAG_OT_Generate_Keyframes(Operator):
         if root_name in bpy.data.objects:
             root_empty = bpy.data.objects[root_name]
             if scene.ttag_overwrite:
-                for child in list(root_empty.children): bpy.data.objects.remove(child, do_unlink=True)
+                children = list(root_empty.children)
+                for child in children: 
+                    bpy.data.objects.remove(child, do_unlink=True)
+            
             if root_empty.name not in target_coll.objects: target_coll.objects.link(root_empty)
         else:
             root_empty = bpy.data.objects.new(root_name, None)
@@ -441,21 +543,29 @@ class TTAG_OT_Generate_Keyframes(Operator):
         
         sorted_items = sorted(preset.items, key=lambda x: x.frame)
         for i, item in enumerate(sorted_items):
+            sync_lines_to_content(item)
             full_text = item.content
             if not full_text: full_text = " "
+            
             font_curve = bpy.data.curves.new(type="FONT", name=f"TTAG_Data_{item.frame}")
             font_curve.body = full_text
-            font_curve.align_x = 'CENTER'
+            font_curve.align_x = item.align_x
+            
+            # 基础对齐优化
             font_curve.align_y = 'BOTTOM'
             font_curve.extrude = 0.02
+            
             obj = bpy.data.objects.new(name=f"TTAG_{item.frame}", object_data=font_curve)
             target_coll.objects.link(obj)
+            
             mat = self.get_or_create_material(f"TTAG_Mat_{safe_name}_{item.frame}", item.color)
             if obj.data.materials: obj.data.materials[0] = mat
             else: obj.data.materials.append(mat)
+            
             obj.parent = root_empty
             obj.rotation_euler.x = math.radians(90)
             obj.location = (0, 0, 0)
+            
             obj.hide_viewport = True
             obj.hide_render = True
             obj.keyframe_insert(data_path="hide_viewport", frame=item.frame - 1)
@@ -464,6 +574,7 @@ class TTAG_OT_Generate_Keyframes(Operator):
             obj.hide_render = False
             obj.keyframe_insert(data_path="hide_viewport", frame=item.frame)
             obj.keyframe_insert(data_path="hide_render", frame=item.frame)
+            
             if i < len(sorted_items) - 1:
                 next_item_frame = sorted_items[i+1].frame
                 if next_item_frame > item.frame:
@@ -471,14 +582,20 @@ class TTAG_OT_Generate_Keyframes(Operator):
                     obj.hide_render = True
                     obj.keyframe_insert(data_path="hide_viewport", frame=next_item_frame)
                     obj.keyframe_insert(data_path="hide_render", frame=next_item_frame)
+            
             if not item.content.strip():
                 obj.hide_viewport = True
                 obj.hide_render = True
                 obj.keyframe_insert(data_path="hide_viewport", frame=item.frame)
                 obj.keyframe_insert(data_path="hide_render", frame=item.frame)
+            
             if obj.animation_data and obj.animation_data.action:
                 for fcurve in obj.animation_data.action.fcurves:
                     for kf in fcurve.keyframe_points: kf.interpolation = 'CONSTANT'
+        
+        if context.view_layer:
+            context.view_layer.update()
+            
         self.report({'INFO'}, f"[{preset.name}] 烘焙完成")
         return {'FINISHED'}
 
@@ -491,13 +608,12 @@ class TTAG_UL_List(UIList):
         split = layout.split(factor=0.12)
         split.prop(item, "color", text="", icon_only=True, emboss=True)
         right_area = split.row(align=True)
-        # [V16.0 调整] 分割比例 0.5
         sub_split = right_area.split(factor=0.5)
         sub_split.prop(item, "frame", text="", emboss=False)
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V16"
+    bl_label = "Timeline Tags Pro V23.2"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -507,11 +623,7 @@ class TTAG_PT_Panel(Panel):
         layout = self.layout
         scene = context.scene
 
-        row = layout.row(align=True)
-        row.prop(scene, "ttag_live_sync", text="跟随时间轴", icon='TIME', toggle=True)
-        row.operator("ttag.sort_by_frame", text="", icon='SORT_ASC')
-        layout.separator()
-
+        # --- Presets ---
         box = layout.box()
         row = box.row()
         row.label(text="版本管理 (Presets):", icon='PRESET')
@@ -534,17 +646,23 @@ class TTAG_PT_Panel(Panel):
 
         layout.separator()
 
+        # --- [V23.2] Header: Color first, Sync second ---
         row = layout.row(align=True)
-        row.label(text="新建颜色:", icon='COLOR')
-        sub = row.row()
-        sub.scale_x = 0.5 
-        sub.prop(scene, "ttag_default_color", text="")
-        row.operator("ttag.save_ui", text="保存到数据库", icon='FILE_TICK') 
+        row.label(text="标签管理 (Tag Manager)", icon='TAG')
+        
+        sub = row.row(align=True)
+        sub.alignment = 'RIGHT'
+        sub.prop(scene, "ttag_default_color", text="") # [1] Color
+        sub.prop(scene, "ttag_live_sync", text="", icon='TIME', toggle=True) # [2] Sync
+        sub.operator("ttag.save_ui", text="", icon='FILE_TICK') # [3] Save
 
+        # --- List ---
         row = layout.row()
         row.template_list("TTAG_UL_List", "", active_preset, "items", active_preset, "active_item_index")
         
         col = row.column(align=True)
+        col.operator("ttag.sort_by_frame", text="", icon='SORT_ASC')
+        col.separator()
         col.operator("ttag.list_action", icon='ADD', text="").action = "ADD"
         col.operator("ttag.list_action", icon='REMOVE', text="").action = "REMOVE"
         col.separator()
@@ -553,38 +671,44 @@ class TTAG_PT_Panel(Panel):
 
         layout.separator()
         
-        # Safe access
-        safe_idx = active_preset.active_item_index
-        if len(active_preset.items) > 0:
+        # --- Edit Area ---
+        if active_preset.active_item_index >= 0 and len(active_preset.items) > 0:
+            safe_idx = active_preset.active_item_index
             if safe_idx >= len(active_preset.items): safe_idx = len(active_preset.items) - 1
             if safe_idx < 0: safe_idx = 0
             
             item = active_preset.items[safe_idx]
             box = layout.box()
             col = box.column(align=True)
-            row_io = col.row(align=True)
-            row_io.scale_y = 1.4
             
-            op_copy = row_io.operator("ttag.copy_clipboard", icon='COPYDOWN', text="复制")
-            op_paste = row_io.operator("ttag.paste_clipboard", icon='PASTEDOWN', text="粘贴")
+            # Header
+            col.label(text="内容编辑 (Content Edit):", icon='TEXT')
+            
+            # Tool Row
+            row_tools = col.row(align=True)
+            row_tools.scale_y = 1.2
+            row_tools.operator("ttag.copy_clipboard", text="复制", icon='COPYDOWN')
+            row_tools.operator("ttag.paste_clipboard", text="粘贴", icon='PASTEDOWN')
+            row_tools.separator()
+            row_tools.prop(item, "align_x", text="", expand=True)
+            
             col.separator()
             
-            sub = col.box()
-            header = sub.row(align=True)
-            header.label(text="[预览]")
-            header.prop(scene, "ttag_preview_rows", text="行")
-            
-            lines = item.content.split('\n')
-            if not item.content.strip(): sub.label(text="(空)", icon='INFO')
+            if len(item.text_lines) == 0:
+                col.label(text="无文本 (尝试重新加载)", icon='ERROR')
             else:
-                limit = scene.ttag_preview_rows
-                for i, txt in enumerate(lines[:limit]): sub.label(text=txt)
-                if len(lines) > limit: sub.label(text="...")
+                for idx, line in enumerate(item.text_lines):
+                    row_line = col.row(align=True)
+                    row_line.prop(line, "body", text="")
+                    op_add = row_line.operator("ttag.insert_newline", text="", icon='ADD')
+                    op_add.target_index = idx
+                    op_del = row_line.operator("ttag.remove_text_line", text="", icon='X')
+                    op_del.index = idx
 
         layout.separator()
         
         box = layout.box()
-        box.label(text="输出:", icon='OUTPUT')
+        box.label(text="输出 (Output):", icon='OUTPUT')
         row = box.row(align=True)
         row.operator("ttag.export_srt", icon='TEXT', text="导出 SRT")
         row.operator("ttag.import_srt", icon='IMPORT', text="导入 SRT")
@@ -598,7 +722,9 @@ class TTAG_PT_Panel(Panel):
 # =========================================================================
 
 classes = (
+    TTAG_TextLine,
     TTAG_Item, TTAG_Preset,
+    TTAG_OT_Insert_Newline, TTAG_OT_Remove_Text_Line,
     TTAG_OT_Preset_Action, TTAG_OT_Load_From_DB, TTAG_OT_Export_SRT, TTAG_OT_Import_SRT,
     TTAG_OT_List_Action, TTAG_OT_Copy_Clipboard, TTAG_OT_Paste_Clipboard, TTAG_OT_Save_UI_Changes,
     TTAG_OT_Sort_By_Frame, TTAG_OT_Generate_Keyframes,
@@ -621,6 +747,9 @@ def register():
     )
     bpy.types.Scene.ttag_live_sync = BoolProperty(name="Sync", default=True, description="开启: 列表随时间轴自动滚动，点击列表跳转时间轴")
     bpy.types.Scene.ttag_is_syncing_from_timeline = BoolProperty(default=False)
+    
+    bpy.types.Scene.ttag_lock_sync = BoolProperty(default=False)
+    
     bpy.types.Scene.ttag_default_color = FloatVectorProperty(name="Default Color", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0, description="新建标签的默认颜色")
     bpy.types.Scene.ttag_preview_rows = IntProperty(name="Preview Rows", default=5, min=1, max=50, description="预览框最大显示行数")
     if ttag_sync_handler not in bpy.app.handlers.frame_change_post: bpy.app.handlers.frame_change_post.append(ttag_sync_handler)
@@ -633,6 +762,7 @@ def unregister():
     del bpy.types.Scene.ttag_overwrite
     del bpy.types.Scene.ttag_live_sync
     del bpy.types.Scene.ttag_is_syncing_from_timeline
+    del bpy.types.Scene.ttag_lock_sync
     del bpy.types.Scene.ttag_default_color
     del bpy.types.Scene.ttag_preview_rows
 
