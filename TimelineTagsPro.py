@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V15.4",
+    "name": "Timeline Tags Pro V16",
     "author": "Dev_BlenderPy",
-    "version": (15, 4),
+    "version": (16, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "完善版：支持删除预设时自动清理后台文件，全功能集成。",
+    "description": "最终完善版：支持SRT外部文件导入导出，UI调整，全功能集成",
     "category": "Animation",
 }
 
@@ -13,9 +13,12 @@ import json
 import re
 import math
 import time
+import os
 from bpy.props import IntProperty, StringProperty, CollectionProperty, PointerProperty, BoolProperty, FloatVectorProperty
 from bpy.types import PropertyGroup, UIList, Operator, Panel
 from bpy.app.handlers import persistent
+# 引入 ExportHelper 和 ImportHelper
+from bpy_extras.io_utils import ImportHelper, ExportHelper
 
 # =========================================================================
 # 1. 核心逻辑：数据序列化 (JSON IO)
@@ -69,7 +72,6 @@ def update_preset_name(self, context):
 # =========================================================================
 
 def get_active_preset(scene):
-    # 安全读取，不写入
     count = len(scene.ttag_presets)
     if count == 0:
         return None
@@ -79,7 +81,6 @@ def get_active_preset(scene):
     return scene.ttag_presets[safe_idx]
 
 def validate_preset_index(self, context):
-    # 写入时修正
     count = len(self.ttag_presets)
     if count == 0: return
     if self.ttag_active_preset_index >= count:
@@ -170,30 +171,23 @@ class TTAG_OT_Preset_Action(Operator):
             name = f"Version_{count}"
             new_preset.name = name
             scene.ttag_active_preset_index = count - 1
-            
             fname = f"TTAG_DB_{name}.json"
             if fname not in bpy.data.texts:
                 new_preset.storage_file = bpy.data.texts.new(fname)
             else:
                 new_preset.storage_file = bpy.data.texts[fname]
                 load_preset_data(new_preset)
-                
         elif self.action == "REMOVE":
             if len(scene.ttag_presets) > 0:
                 idx = scene.ttag_active_preset_index
                 preset_to_remove = scene.ttag_presets[idx]
-                
-                # --- [新增] 删除关联的文本文件逻辑 ---
                 file_ref = preset_to_remove.storage_file
                 if file_ref:
                     file_name = file_ref.name
                     bpy.data.texts.remove(file_ref, do_unlink=True)
                     self.report({'INFO'}, f"已清除后台文件: {file_name}")
-                # -----------------------------------
-
                 scene.ttag_presets.remove(idx)
                 scene.ttag_active_preset_index = max(0, idx - 1)
-        
         return {'FINISHED'}
 
 class TTAG_OT_Load_From_DB(Operator):
@@ -298,23 +292,30 @@ class TTAG_OT_Sort_By_Frame(Operator):
         save_preset_data(preset)
         return {'FINISHED'}
 
-class TTAG_OT_Export_SRT(Operator):
+class TTAG_OT_Export_SRT(Operator, ExportHelper):
+    """
+    [V16.0] SRT 导出功能：支持文件浏览器选择保存路径
+    """
     bl_idname = "ttag.export_srt"
-    bl_label = "导出 SRT"
-    bl_description = "根据当前列表生成标准 SRT 字幕文本块"
+    bl_label = "导出 SRT 文件"
+    bl_description = "将当前列表导出为外部 SRT 文件"
+    
+    # ExportHelper 属性
+    filename_ext = ".srt"
+    filter_glob: StringProperty(default="*.srt", options={'HIDDEN'})
+
     def execute(self, context):
         scene = context.scene
         preset = get_active_preset(scene)
         if not preset: return {'CANCELLED'}
+        
         fps = scene.render.fps / scene.render.fps_base
-        export_name = f"Export_{preset.name}.srt"
-        if export_name in bpy.data.texts: bpy.data.texts[export_name].clear()
-        else: bpy.data.texts.new(export_name)
-        txt_block = bpy.data.texts[export_name]
+        filepath = self.filepath
         
         sorted_items = sorted(preset.items, key=lambda x: x.frame)
         srt_content = ""
         counter = 1
+        
         for i, item in enumerate(sorted_items):
             content = item.content.strip()
             if not content: continue
@@ -324,30 +325,54 @@ class TTAG_OT_Export_SRT(Operator):
             end_time = frame_to_timecode(end_frame, fps)
             srt_content += f"{counter}\n{start_time} --> {end_time}\n{content}\n\n"
             counter += 1
-        txt_block.write(srt_content)
-        for area in context.screen.areas:
-            if area.type == 'TEXT_EDITOR':
-                area.spaces[0].text = txt_block
-        self.report({'INFO'}, f"SRT 已导出: {export_name}")
+            
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(srt_content)
+            self.report({'INFO'}, f"导出成功: {filepath}")
+        except Exception as e:
+            self.report({'ERROR'}, f"写入文件失败: {str(e)}")
+            return {'CANCELLED'}
+            
         return {'FINISHED'}
 
-class TTAG_OT_Import_SRT(Operator):
+class TTAG_OT_Import_SRT(Operator, ImportHelper):
     bl_idname = "ttag.import_srt"
-    bl_label = "导入 SRT"
-    bl_description = "选择一个文本块，解析其 SRT 内容并覆盖当前列表"
-    source_text: StringProperty(name="Source Text Block")
+    bl_label = "导入 SRT 文件"
+    bl_description = "选择一个外部 .srt 文件导入，将自动按帧率转换时间码"
+    
+    # ImportHelper 属性
+    filter_glob: StringProperty(default="*.srt", options={'HIDDEN'})
+    filename_ext: StringProperty(default=".srt", options={'HIDDEN'})
+
     def execute(self, context):
         scene = context.scene
         preset = get_active_preset(scene)
-        if not preset: return {'CANCELLED'}
-        if self.source_text not in bpy.data.texts: return {'CANCELLED'}
-        raw_text = bpy.data.texts[self.source_text].as_string()
+        if not preset: 
+            self.report({'ERROR'}, "请先创建一个版本预设")
+            return {'CANCELLED'}
+        
+        filepath = self.filepath
+        if not os.path.exists(filepath):
+            self.report({'ERROR'}, "文件不存在")
+            return {'CANCELLED'}
+
+        try:
+            # 尝试使用 utf-8-sig 以兼容带 BOM 的文件
+            with open(filepath, 'r', encoding='utf-8-sig') as f:
+                raw_text = f.read()
+        except Exception as e:
+            self.report({'ERROR'}, f"读取文件失败: {str(e)}")
+            return {'CANCELLED'}
+
         fps = scene.render.fps / scene.render.fps_base
         pattern = re.compile(r'(\d+)\s*\n\s*(\d{2}:\d{2}:\d{2}[,:]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,:]\d{3})\s*\n(.*?)(?=\n\s*\d+\s*\n|\Z)', re.DOTALL)
         matches = pattern.findall(raw_text)
+        
         if not matches:
-            self.report({'WARNING'}, "未识别到字幕")
+            self.report({'WARNING'}, "未识别到有效的 SRT 内容")
             return {'CANCELLED'}
+        
         preset.items.clear()
         for match in matches:
             start_tc = match[1]
@@ -358,16 +383,15 @@ class TTAG_OT_Import_SRT(Operator):
             item.content = content
             item.summary = f"F{frame}"
             item.color = scene.ttag_default_color
+            
         save_preset_data(preset)
-        self.report({'INFO'}, f"已导入 {len(matches)} 条")
+        self.report({'INFO'}, f"成功导入 {len(matches)} 条字幕")
         return {'FINISHED'}
-    def invoke(self, context, event): return context.window_manager.invoke_props_dialog(self)
-    def draw(self, context): context.window_manager.layout.prop_search(self, "source_text", bpy.data, "texts")
 
 class TTAG_OT_Generate_Keyframes(Operator):
     bl_idname = "ttag.generate_keyframes"
     bl_label = "烘焙当前版本"
-    bl_description = "将当前版本的所有标签生成为3D物体。不同版本会生成独立的根物体。"
+    bl_description = "将当前版本的所有标签生成为3D物体。不同版本会生成独立的根物体"
     def get_or_create_material(self, name, color):
         mat = bpy.data.materials.get(name)
         if mat is None: mat = bpy.data.materials.new(name=name)
@@ -467,12 +491,13 @@ class TTAG_UL_List(UIList):
         split = layout.split(factor=0.12)
         split.prop(item, "color", text="", icon_only=True, emboss=True)
         right_area = split.row(align=True)
-        sub_split = right_area.split(factor=0.33)
+        # [V16.0 调整] 分割比例 0.5
+        sub_split = right_area.split(factor=0.5)
         sub_split.prop(item, "frame", text="", emboss=False)
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V15.4"
+    bl_label = "Timeline Tags Pro V16"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -502,7 +527,6 @@ class TTAG_PT_Panel(Panel):
             row.operator("ttag.preset_action", text="", icon='ADD').action = "ADD"
             row.operator("ttag.preset_action", text="", icon='TRASH').action = "REMOVE"
             sub = row.row(align=True)
-            # Idx 修正：使用带 update 回调的 IntProperty，且 draw 中不再做逻辑判断
             sub.prop(scene, "ttag_active_preset_index", text="Idx")
 
         active_preset = get_active_preset(scene)
@@ -564,7 +588,6 @@ class TTAG_PT_Panel(Panel):
         row = box.row(align=True)
         row.operator("ttag.export_srt", icon='TEXT', text="导出 SRT")
         row.operator("ttag.import_srt", icon='IMPORT', text="导入 SRT")
-        # [Del] 已移除底部冗余的刷新按钮
         
         row = box.row()
         row.prop(scene, "ttag_overwrite", text="覆盖旧烘焙")
@@ -586,7 +609,6 @@ def register():
     for cls in classes: bpy.utils.register_class(cls)
     bpy.types.Scene.ttag_presets = CollectionProperty(type=TTAG_Preset)
     
-    # 写入保护：通过回调验证索引
     bpy.types.Scene.ttag_active_preset_index = IntProperty(
         min=0, update=validate_preset_index,
         description="当前激活的预设版本索引"
