@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V27",
+    "name": "Timeline Tags Pro V27.1",
     "author": "Dev_BlenderPy",
-    "version": (27, 0),
+    "version": (27, 1),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "极简UI版：版本管理单行化，按钮方块化，全功能集成。",
+    "description": "数学修正版：修复时间码转换精度丢失导致的帧漂移问题。",
     "category": "Animation",
 }
 
@@ -24,26 +24,21 @@ from bpy_extras.io_utils import ImportHelper, ExportHelper
 # =========================================================================
 
 def sync_lines_to_content(item):
-    """[UI -> Data] 将多行列表合并为单个字符串"""
     lines = [line.body for line in item.text_lines]
     item["content"] = "\n".join(lines) 
 
 def sync_content_to_lines(item):
-    """[Data -> UI] 将 content 拆分到多行"""
     raw = item.get("content", "")
     item.text_lines.clear()
-    
     if not raw:
         item.text_lines.add()
         return
-
     lines = raw.split("\n")
     for txt in lines:
         new_line = item.text_lines.add()
         new_line.body = txt
 
 def update_line_body(self, context):
-    """当文本被修改时触发同步"""
     scene = context.scene
     preset = get_active_preset(scene)
     if preset and 0 <= preset.active_item_index < len(preset.items):
@@ -62,7 +57,6 @@ def save_preset_data(preset):
             "summary": item.summary,
             "content": item.content,
             "color": (item.color[0], item.color[1], item.color[2]),
-            # Align is global
         }
         data_list.append(entry)
     preset.storage_file.clear()
@@ -94,7 +88,7 @@ def update_preset_name(self, context):
         self.storage_file.name = f"TTAG_DB_{safe_name}.json"
 
 # =========================================================================
-# 2. 辅助函数
+# 2. [V27.1] 数学修正：高精度时间转换
 # =========================================================================
 
 def get_active_preset(scene):
@@ -112,19 +106,41 @@ def validate_preset_index(self, context):
         self.ttag_active_preset_index = max(0, count - 1)
 
 def frame_to_timecode(frame, fps):
+    """
+    Frame -> SRT Timecode
+    使用 round 确保毫秒数最接近真实值
+    """
     total = frame / fps
     h = int(total // 3600)
     m = int((total % 3600) // 60)
     s = int(total % 60)
-    ms = int((total - int(total)) * 1000)
+    # [Fix] 使用 round 而不是 int 直接截断，减少导出时的精度损失
+    ms = int(round((total - int(total)) * 1000))
+    # 防止进位问题 (比如 999.9ms rounded to 1000)
+    if ms >= 1000:
+        ms = 0
+        s += 1
+        if s >= 60:
+            s = 0
+            m += 1
+            if m >= 60:
+                m = 0
+                h += 1
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 def timecode_to_frame(timecode, fps):
+    """
+    SRT Timecode -> Frame
+    [Fix] 使用 round() 替代 int()
+    int(0.99) = 0 -> 错误
+    round(0.99) = 1 -> 正确
+    """
     try:
         parts = timecode.replace(',', ':').replace('.', ':').split(':') 
         h, m, s, ms = map(int, parts)
         total = h * 3600 + m * 60 + s + (ms / 1000.0)
-        return int(total * fps)
+        # [Fix] 核心修复：四舍五入到最近的整数帧
+        return int(round(total * fps))
     except:
         return 0
 
@@ -167,7 +183,6 @@ def ttag_sync_handler(scene):
 # =========================================================================
 
 class TTAG_TextLine(PropertyGroup):
-    """单行文本数据"""
     body: StringProperty(name="Text", default="", update=update_line_body, description="单行文本内容")
 
 class TTAG_Item(PropertyGroup):
@@ -474,6 +489,7 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
         for match in matches:
             start_tc = match[1]
             content = match[3].strip()
+            # [Fix] 使用 round() 防止精度丢失导致的漂移
             frame = timecode_to_frame(start_tc, fps)
             item = preset.items.add()
             item.frame = frame
@@ -556,10 +572,7 @@ class TTAG_OT_Generate_Keyframes(Operator):
             font_curve = bpy.data.curves.new(type="FONT", name=f"TTAG_Data_{item.frame}")
             font_curve.body = full_text
             
-            # [V24] 使用全局对齐
             font_curve.align_x = scene.ttag_global_align
-            
-            # 基础对齐优化
             font_curve.align_y = 'BOTTOM'
             font_curve.extrude = 0.02
             
@@ -621,7 +634,7 @@ class TTAG_UL_List(UIList):
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V27"
+    bl_label = "Timeline Tags Pro V27.1"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
