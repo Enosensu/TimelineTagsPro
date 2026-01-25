@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V27.1",
+    "name": "Timeline Tags Pro V32",
     "author": "Dev_BlenderPy",
-    "version": (27, 1),
+    "version": (32, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "数学修正版：修复时间码转换精度丢失导致的帧漂移问题。",
+    "description": "UI完美版：利用自动扩张特性实现右侧吸附，覆盖按钮方块化。",
     "category": "Animation",
 }
 
@@ -20,7 +20,7 @@ from bpy.app.handlers import persistent
 from bpy_extras.io_utils import ImportHelper, ExportHelper
 
 # =========================================================================
-# 1. 核心逻辑：数据同步与序列化
+# 1. 核心逻辑
 # =========================================================================
 
 def sync_lines_to_content(item):
@@ -88,7 +88,7 @@ def update_preset_name(self, context):
         self.storage_file.name = f"TTAG_DB_{safe_name}.json"
 
 # =========================================================================
-# 2. [V27.1] 数学修正：高精度时间转换
+# 2. 辅助函数
 # =========================================================================
 
 def get_active_preset(scene):
@@ -106,17 +106,11 @@ def validate_preset_index(self, context):
         self.ttag_active_preset_index = max(0, count - 1)
 
 def frame_to_timecode(frame, fps):
-    """
-    Frame -> SRT Timecode
-    使用 round 确保毫秒数最接近真实值
-    """
     total = frame / fps
     h = int(total // 3600)
     m = int((total % 3600) // 60)
     s = int(total % 60)
-    # [Fix] 使用 round 而不是 int 直接截断，减少导出时的精度损失
     ms = int(round((total - int(total)) * 1000))
-    # 防止进位问题 (比如 999.9ms rounded to 1000)
     if ms >= 1000:
         ms = 0
         s += 1
@@ -129,17 +123,10 @@ def frame_to_timecode(frame, fps):
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 def timecode_to_frame(timecode, fps):
-    """
-    SRT Timecode -> Frame
-    [Fix] 使用 round() 替代 int()
-    int(0.99) = 0 -> 错误
-    round(0.99) = 1 -> 正确
-    """
     try:
         parts = timecode.replace(',', ':').replace('.', ':').split(':') 
         h, m, s, ms = map(int, parts)
         total = h * 3600 + m * 60 + s + (ms / 1000.0)
-        # [Fix] 核心修复：四舍五入到最近的整数帧
         return int(round(total * fps))
     except:
         return 0
@@ -149,10 +136,8 @@ def update_item_index(self, context):
     if getattr(scene, "ttag_lock_sync", False): return
     if getattr(scene, "ttag_is_syncing_from_timeline", False): return
     if not getattr(scene, "ttag_live_sync", False): return
-    
     active_preset = get_active_preset(scene)
     if self != active_preset: return
-    
     idx = self.active_item_index
     if 0 <= idx < len(self.items):
         scene.frame_current = self.items[idx].frame
@@ -161,7 +146,6 @@ def update_item_index(self, context):
 def ttag_sync_handler(scene):
     if not getattr(scene, "ttag_live_sync", False): return
     if getattr(scene, "ttag_lock_sync", False): return
-    
     preset = get_active_preset(scene)
     if not preset or len(preset.items) == 0: return
     curr = scene.frame_current
@@ -489,7 +473,7 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
         for match in matches:
             start_tc = match[1]
             content = match[3].strip()
-            # [Fix] 使用 round() 防止精度丢失导致的漂移
+            # [V27.1 Fix] 使用 round() 防止精度丢失导致的漂移
             frame = timecode_to_frame(start_tc, fps)
             item = preset.items.add()
             item.frame = frame
@@ -526,13 +510,25 @@ class TTAG_OT_Generate_Keyframes(Operator):
 
     def execute(self, context):
         scene = context.scene
-        # 安全性更新
         if context.view_layer:
             context.view_layer.update()
             
         preset = get_active_preset(scene)
         if not preset: return {'CANCELLED'}
         save_preset_data(preset) 
+        
+        # [V28] 预加载字体 (Safe Check)
+        loaded_font = None
+        font_path = scene.ttag_font_path.strip()
+        if font_path and os.path.exists(font_path):
+            try:
+                font_name = os.path.basename(font_path)
+                if font_name not in bpy.data.fonts:
+                    bpy.data.fonts.load(font_path)
+                if font_name in bpy.data.fonts:
+                    loaded_font = bpy.data.fonts[font_name]
+            except:
+                self.report({'WARNING'}, "字体加载失败，将使用默认字体")
         
         safe_name = preset.name.strip().replace(" ", "_")
         if not safe_name: safe_name = "Unnamed"
@@ -572,6 +568,10 @@ class TTAG_OT_Generate_Keyframes(Operator):
             font_curve = bpy.data.curves.new(type="FONT", name=f"TTAG_Data_{item.frame}")
             font_curve.body = full_text
             
+            # [V29] 应用自定义字体
+            if loaded_font:
+                font_curve.font = loaded_font
+                
             font_curve.align_x = scene.ttag_global_align
             font_curve.align_y = 'BOTTOM'
             font_curve.extrude = 0.02
@@ -634,7 +634,7 @@ class TTAG_UL_List(UIList):
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V27.1"
+    bl_label = "Timeline Tags Pro V32"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -644,9 +644,8 @@ class TTAG_PT_Panel(Panel):
         layout = self.layout
         scene = context.scene
 
-        # --- [V27] 1. Version Manager (Single Row) ---
+        # --- 1. Version Manager ---
         box = layout.box()
-        # Row: Label | Name | Menu | Refresh | Add | Remove
         row = box.row(align=True)
         row.label(text="版本 (Version):", icon='PRESET')
         
@@ -659,11 +658,9 @@ class TTAG_PT_Panel(Panel):
         else:
             row.label(text="无预设")
             
-        # Add/Remove (Icons Only) attached to same row
         row.operator("ttag.preset_action", text="", icon='ADD').action = "ADD"
         row.operator("ttag.preset_action", text="", icon='TRASH').action = "REMOVE"
 
-        # Safe Exit
         active_preset = get_active_preset(scene)
         if not active_preset: return
 
@@ -694,7 +691,7 @@ class TTAG_PT_Panel(Panel):
 
         layout.separator()
         
-        # --- 4. Editor Area ---
+        # --- 4. Edit Area ---
         if active_preset.active_item_index >= 0 and len(active_preset.items) > 0:
             safe_idx = active_preset.active_item_index
             if safe_idx >= len(active_preset.items): safe_idx = len(active_preset.items) - 1
@@ -726,18 +723,33 @@ class TTAG_PT_Panel(Panel):
 
         layout.separator()
         
-        # --- 5. Output Area ---
+        # --- 5. Output Area (V32 Layout) ---
         box = layout.box()
         box.label(text="输出 (Output):", icon='OUTPUT')
+        
+        # Row 1: SRT Import/Export (Full width, scaled)
         row = box.row(align=True)
+        row.scale_y = 1.2
         row.operator("ttag.export_srt", icon='TEXT', text="导出 SRT")
         row.operator("ttag.import_srt", icon='IMPORT', text="导入 SRT")
         
+        # Row 2: Font Path (Expanding) | Overwrite (Square Icon) | Align (Compact)
+        # [V32] Removed split(), utilizing default layout expansion
         row = box.row(align=True)
-        row.prop(scene, "ttag_overwrite", text="覆盖旧烘焙")
+        
+        # Font Picker (Will auto-expand)
+        row.prop(scene, "ttag_font_path", text="")
+        
+        # Overwrite Button (Square toggle)
+        row.prop(scene, "ttag_overwrite", text="", icon='FILE_REFRESH', toggle=True)
+        
+        # Align Buttons
         row.prop(scene, "ttag_global_align", text="", expand=True)
         
-        box.operator("ttag.generate_keyframes", icon='SHADING_BBOX', text=f"烘焙: {active_preset.name}")
+        # Row 3: Bake (Height Adjusted to 1.2)
+        row = box.row()
+        row.scale_y = 1.2 
+        row.operator("ttag.generate_keyframes", icon='SHADING_BBOX', text=f"烘焙: {active_preset.name}")
 
 # =========================================================================
 # 6. 注册
@@ -767,7 +779,7 @@ def register():
     bpy.types.Scene.ttag_overwrite = BoolProperty(
         name="Overwrite", 
         default=True,
-        description="勾选: 更新现有的 Root 物体 (保留位移/动画)\n不勾选: 创建全新的 v1, v2... 物体 (保留历史版本)"
+        description="勾选: 覆盖旧烘焙 (Uncheck to create new version)"
     )
     bpy.types.Scene.ttag_live_sync = BoolProperty(name="Sync", default=True, description="开启: 列表随时间轴自动滚动，点击列表跳转时间轴")
     bpy.types.Scene.ttag_is_syncing_from_timeline = BoolProperty(default=False)
@@ -787,6 +799,13 @@ def register():
         default='CENTER',
         description="全局文字对齐方式（影响烘焙结果）"
     )
+    
+    # [V32] 烘焙字体
+    bpy.types.Scene.ttag_font_path = StringProperty(
+        name="烘焙字体",
+        description="烘焙字体文件路径 (留空使用默认)",
+        subtype='FILE_PATH'
+    )
 
     if ttag_sync_handler not in bpy.app.handlers.frame_change_post: bpy.app.handlers.frame_change_post.append(ttag_sync_handler)
 
@@ -802,6 +821,7 @@ def unregister():
     del bpy.types.Scene.ttag_default_color
     del bpy.types.Scene.ttag_preview_rows
     del bpy.types.Scene.ttag_global_align
+    del bpy.types.Scene.ttag_font_path
 
 if __name__ == "__main__":
     register()
