@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V36.6",
+    "name": "Timeline Tags Pro V36.7",
     "author": "Dev_BlenderPy",
-    "version": (36, 6),
+    "version": (36, 7),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "修复撤销系统：为所有操作符添加 UNDO 支持，确保 Ctrl+Z 正常工作。",
+    "description": "功能升级：支持生成时间轴标记(Markers)，优化UI文案。",
     "category": "Animation",
 }
 
@@ -261,7 +261,6 @@ class TTAG_OT_Insert_Newline(Operator):
     bl_idname = "ttag.insert_newline"
     bl_label = "插入新行"
     bl_description = "在此行下方插入新文本行"
-    # [V36.6] 添加 UNDO 支持
     bl_options = {'REGISTER', 'UNDO'}
     target_index: IntProperty(default=-1)
 
@@ -290,7 +289,6 @@ class TTAG_OT_Remove_Text_Line(Operator):
     bl_idname = "ttag.remove_text_line"
     bl_label = "删除行"
     bl_description = "删除此行"
-    # [V36.6] 添加 UNDO 支持
     bl_options = {'REGISTER', 'UNDO'}
     index: IntProperty()
 
@@ -313,7 +311,6 @@ class TTAG_OT_Copy_Clipboard(Operator):
     bl_idname = "ttag.copy_clipboard"
     bl_label = "复制"
     bl_description = "复制内容"
-    # Copy 不需要 Undo，因为它不修改 Blender 数据
     def execute(self, context):
         scene = context.scene
         items = scene.ttag_runtime_items
@@ -329,7 +326,6 @@ class TTAG_OT_Paste_Clipboard(Operator):
     bl_idname = "ttag.paste_clipboard"
     bl_label = "粘贴"
     bl_description = "粘贴内容"
-    # [V36.6] 添加 UNDO 支持
     bl_options = {'REGISTER', 'UNDO'}
     def execute(self, context):
         scene = context.scene
@@ -350,7 +346,6 @@ class TTAG_OT_List_Action(Operator):
     bl_idname = "ttag.list_action"
     bl_label = "List Action"
     bl_description = "列表操作"
-    # [V36.6] 添加 UNDO 支持
     bl_options = {'REGISTER', 'UNDO'}
     action: StringProperty(default="ADD")
 
@@ -395,7 +390,6 @@ class TTAG_OT_Reload_From_Text(Operator):
     bl_idname = "ttag.reload_from_text"
     bl_label = "重载"
     bl_description = "强制从文本块重新读取数据 (自动修复转义符)"
-    # [V36.6] 重载也是对数据的大规模修改，支持撤销
     bl_options = {'REGISTER', 'UNDO'}
     def execute(self, context):
         load_runtime_data(context.scene, operator=self)
@@ -407,7 +401,6 @@ class TTAG_OT_Sort_By_Frame(Operator):
     bl_idname = "ttag.sort_by_frame"
     bl_label = "排序"
     bl_description = "按帧号排序"
-    # [V36.6] 添加 UNDO 支持
     bl_options = {'REGISTER', 'UNDO'}
     def execute(self, context):
         scene = context.scene
@@ -476,7 +469,6 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
     bl_description = "导入SRT"
     filter_glob: StringProperty(default="*.srt", options={'HIDDEN'})
     filename_ext: StringProperty(default=".srt", options={'HIDDEN'})
-    # [V36.6] 导入是大量数据写入，必须支持撤销
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -521,7 +513,7 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
 class TTAG_OT_Generate_Keyframes(Operator):
     bl_idname = "ttag.generate_keyframes"
     bl_label = "烘焙当前版本"
-    bl_description = "生成3D物体"
+    bl_description = "生成3D物体和时间轴标记"
     bl_options = {'REGISTER', 'UNDO'} 
 
     def get_or_create_material(self, name, color):
@@ -649,6 +641,19 @@ class TTAG_OT_Generate_Keyframes(Operator):
             if obj.animation_data and obj.animation_data.action:
                 for fcurve in obj.animation_data.action.fcurves:
                     for kf in fcurve.keyframe_points: kf.interpolation = 'CONSTANT'
+
+            # [V36.7] 添加时间轴标记 (Timeline Markers)
+            # 如果开启了Overwrite，则先删除该帧已有的标记，避免重叠
+            if scene.ttag_overwrite:
+                # 查找当前帧的所有标记
+                markers_at_frame = [m for m in scene.timeline_markers if m.frame == item.frame]
+                for m in markers_at_frame:
+                    scene.timeline_markers.remove(m)
+            
+            # 创建新标记，名称为标签名(summary)
+            m_name = item.summary
+            if not m_name: m_name = f"F{item.frame}"
+            scene.timeline_markers.new(name=m_name, frame=item.frame)
         
         if context.view_layer:
             context.view_layer.update()
@@ -670,7 +675,7 @@ class TTAG_UL_List(UIList):
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V36.6"
+    bl_label = "Timeline Tags Pro V36.7"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -696,7 +701,8 @@ class TTAG_PT_Panel(Panel):
 
         # --- 2. Global Settings ---
         row = layout.row(align=True)
-        row.label(text="设置 (Settings):", icon='PREFERENCES')
+        # [V36.7] 文案修改: 设置 -> 标签，图标修改: PREFERENCES -> TAG
+        row.label(text="标签 (Tags):", icon='TAG')
         
         sub = row.row(align=True)
         sub.alignment = 'RIGHT'
