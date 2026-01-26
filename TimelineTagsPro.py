@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V36.7",
+    "name": "Timeline Tags Pro V36.9",
     "author": "Dev_BlenderPy",
-    "version": (36, 7),
+    "version": (36, 9),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "功能升级：支持生成时间轴标记(Markers)，优化UI文案。",
+    "description": "功能升级：烘焙功能拆分为独立的3D文字按钮与时间轴标签按钮。",
     "category": "Animation",
 }
 
@@ -510,10 +510,10 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
         self.report({'INFO'}, f"导入 {len(matches)} 条")
         return {'FINISHED'}
 
-class TTAG_OT_Generate_Keyframes(Operator):
-    bl_idname = "ttag.generate_keyframes"
-    bl_label = "烘焙当前版本"
-    bl_description = "生成3D物体和时间轴标记"
+class TTAG_OT_Bake_3D_Text(Operator):
+    bl_idname = "ttag.bake_3d_text"
+    bl_label = "烘焙 3D 文字"
+    bl_description = "生成3D文字物体"
     bl_options = {'REGISTER', 'UNDO'} 
 
     def get_or_create_material(self, name, color):
@@ -641,24 +641,52 @@ class TTAG_OT_Generate_Keyframes(Operator):
             if obj.animation_data and obj.animation_data.action:
                 for fcurve in obj.animation_data.action.fcurves:
                     for kf in fcurve.keyframe_points: kf.interpolation = 'CONSTANT'
-
-            # [V36.7] 添加时间轴标记 (Timeline Markers)
-            # 如果开启了Overwrite，则先删除该帧已有的标记，避免重叠
-            if scene.ttag_overwrite:
-                # 查找当前帧的所有标记
-                markers_at_frame = [m for m in scene.timeline_markers if m.frame == item.frame]
-                for m in markers_at_frame:
-                    scene.timeline_markers.remove(m)
-            
-            # 创建新标记，名称为标签名(summary)
-            m_name = item.summary
-            if not m_name: m_name = f"F{item.frame}"
-            scene.timeline_markers.new(name=m_name, frame=item.frame)
         
         if context.view_layer:
             context.view_layer.update()
             
-        self.report({'INFO'}, f"[{safe_name}] 烘焙完成")
+        self.report({'INFO'}, f"[{safe_name}] 3D文字烘焙完成")
+        return {'FINISHED'}
+
+class TTAG_OT_Bake_Timeline_Markers(Operator):
+    bl_idname = "ttag.bake_timeline_markers"
+    bl_label = "添加时间轴标签"
+    bl_description = "生成/更新时间轴标记"
+    bl_options = {'REGISTER', 'UNDO'} 
+
+    def execute(self, context):
+        scene = context.scene
+        items = scene.ttag_runtime_items
+        if len(items) == 0: return {'CANCELLED'}
+        save_runtime_data(scene) 
+        
+        # 时间轴标记处理
+        if scene.ttag_overwrite_markers:
+            scene.timeline_markers.clear()
+            occupied_frames = set() 
+        else:
+            occupied_frames = {m.frame for m in scene.timeline_markers}
+
+        sorted_items = sorted(items, key=lambda x: x.frame)
+        for item in sorted_items:
+            # --- 时间轴标记生成逻辑 ---
+            m_name = item.summary if item.summary else f"F{item.frame}"
+            m_frame = item.frame
+            
+            # 如果不覆盖，则检测冲突并顺延
+            if not scene.ttag_overwrite_markers:
+                while m_frame in occupied_frames:
+                    m_frame += 1
+            
+            # 添加标记并记录位置
+            try:
+                scene.timeline_markers.new(name=m_name, frame=m_frame)
+                occupied_frames.add(m_frame)
+            except Exception as e:
+                # 理论上不应发生，但也防守一下
+                print(f"Failed to add marker at {m_frame}: {e}")
+
+        self.report({'INFO'}, "时间轴标记已添加")
         return {'FINISHED'}
 
 # =========================================================================
@@ -675,7 +703,7 @@ class TTAG_UL_List(UIList):
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V36.7"
+    bl_label = "Timeline Tags Pro V36.9"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -701,7 +729,6 @@ class TTAG_PT_Panel(Panel):
 
         # --- 2. Global Settings ---
         row = layout.row(align=True)
-        # [V36.7] 文案修改: 设置 -> 标签，图标修改: PREFERENCES -> TAG
         row.label(text="标签 (Tags):", icon='TAG')
         
         sub = row.row(align=True)
@@ -772,14 +799,18 @@ class TTAG_PT_Panel(Panel):
         sub.prop(scene, "ttag_font_path", text="")
         sub_right = sub.row(align=True)
         sub_right.prop(scene, "ttag_line_spacing", text="行距")
+        
+        # 覆盖按钮
         sub_right.prop(scene, "ttag_overwrite", text="", icon='FILE_REFRESH', toggle=True)
+        sub_right.prop(scene, "ttag_overwrite_markers", text="", icon='MARKER', toggle=True)
+        
         sub_right.prop(scene, "ttag_global_align", text="", expand=True)
         
-        # Row 3
-        row = box.row()
+        # Row 3 [V36.9] 拆分为两个按钮
+        row = box.row(align=True)
         row.scale_y = 1.2
-        target_name = scene.ttag_source_text.name if scene.ttag_source_text else "None"
-        row.operator("ttag.generate_keyframes", icon='SHADING_BBOX', text=f"烘焙: {target_name}")
+        row.operator("ttag.bake_3d_text", icon='SHADING_BBOX', text="烘焙 3D 文字")
+        row.operator("ttag.bake_timeline_markers", icon='MARKER', text="添加时间轴标签")
 
 # =========================================================================
 # 6. 注册
@@ -792,7 +823,9 @@ classes = (
     TTAG_OT_Export_SRT, TTAG_OT_Import_SRT,
     TTAG_OT_List_Action, TTAG_OT_Copy_Clipboard, TTAG_OT_Paste_Clipboard, 
     TTAG_OT_Reload_From_Text,
-    TTAG_OT_Sort_By_Frame, TTAG_OT_Generate_Keyframes,
+    TTAG_OT_Sort_By_Frame, 
+    TTAG_OT_Bake_3D_Text,         # [V36.9]
+    TTAG_OT_Bake_Timeline_Markers, # [V36.9]
     TTAG_UL_List, TTAG_PT_Panel,
 )
 
@@ -815,7 +848,14 @@ def register():
         description="当前激活的标签索引"
     )
     
-    bpy.types.Scene.ttag_overwrite = BoolProperty(name="Overwrite", default=True, description="勾选: 覆盖旧烘焙")
+    bpy.types.Scene.ttag_overwrite = BoolProperty(name="Overwrite 3D", default=True, description="覆盖: 重新生成3D文字集合")
+    
+    bpy.types.Scene.ttag_overwrite_markers = BoolProperty(
+        name="Overwrite Markers", 
+        default=True, 
+        description="覆盖标记: 勾选则删除现有所有标记后重新生成；不勾选则在空闲位置追加新标记"
+    )
+
     bpy.types.Scene.ttag_live_sync = BoolProperty(name="Sync", default=True, description="开启: 列表随时间轴自动滚动")
     bpy.types.Scene.ttag_is_syncing_from_timeline = BoolProperty(default=False)
     bpy.types.Scene.ttag_lock_sync = BoolProperty(default=False)
@@ -840,6 +880,7 @@ def unregister():
     del bpy.types.Scene.ttag_is_loading
     del bpy.types.Scene.ttag_active_item_index
     del bpy.types.Scene.ttag_overwrite
+    del bpy.types.Scene.ttag_overwrite_markers # Cleanup
     del bpy.types.Scene.ttag_live_sync
     del bpy.types.Scene.ttag_is_syncing_from_timeline
     del bpy.types.Scene.ttag_lock_sync
