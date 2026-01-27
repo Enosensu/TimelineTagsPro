@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V36.9",
+    "name": "Timeline Tags Pro V37.0",
     "author": "Dev_BlenderPy",
-    "version": (36, 9),
+    "version": (37, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "功能升级：烘焙功能拆分为独立的3D文字按钮与时间轴标签按钮。",
+    "description": "UI优化：调整覆盖按钮布局。",
     "category": "Animation",
 }
 
@@ -703,7 +703,7 @@ class TTAG_UL_List(UIList):
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V36.9"
+    bl_label = "Timeline Tags Pro V37.0"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -800,13 +800,12 @@ class TTAG_PT_Panel(Panel):
         sub_right = sub.row(align=True)
         sub_right.prop(scene, "ttag_line_spacing", text="行距")
         
-        # 覆盖按钮
+        # [V37.0] 调整布局顺序
         sub_right.prop(scene, "ttag_overwrite", text="", icon='FILE_REFRESH', toggle=True)
-        sub_right.prop(scene, "ttag_overwrite_markers", text="", icon='MARKER', toggle=True)
-        
         sub_right.prop(scene, "ttag_global_align", text="", expand=True)
+        sub_right.prop(scene, "ttag_overwrite_markers", text="", icon='MARKER', toggle=True) # Moved here
         
-        # Row 3 [V36.9] 拆分为两个按钮
+        # Row 3
         row = box.row(align=True)
         row.scale_y = 1.2
         row.operator("ttag.bake_3d_text", icon='SHADING_BBOX', text="烘焙 3D 文字")
@@ -824,8 +823,8 @@ classes = (
     TTAG_OT_List_Action, TTAG_OT_Copy_Clipboard, TTAG_OT_Paste_Clipboard, 
     TTAG_OT_Reload_From_Text,
     TTAG_OT_Sort_By_Frame, 
-    TTAG_OT_Bake_3D_Text,         # [V36.9]
-    TTAG_OT_Bake_Timeline_Markers, # [V36.9]
+    TTAG_OT_Bake_3D_Text,
+    TTAG_OT_Bake_Timeline_Markers,
     TTAG_UL_List, TTAG_PT_Panel,
 )
 
