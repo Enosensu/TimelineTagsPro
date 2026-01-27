@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V37.0",
+    "name": "Timeline Tags Pro V38.1",
     "author": "Dev_BlenderPy",
-    "version": (37, 0),
+    "version": (38, 1),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "UI优化：调整覆盖按钮布局。",
+    "description": "架构修复版：基于V37.5完整功能，新增全局设置（字体/对齐等）的自动保存与恢复。",
     "category": "Animation",
 }
 
@@ -24,27 +24,51 @@ from bpy_extras.io_utils import ImportHelper, ExportHelper
 # =========================================================================
 
 def sync_lines_to_content(item):
+    """
+    [V37.4] 将多行文本合并为字符串。
+    逻辑更新：精准剔除最后两个用于Tab跳转的空行，保留用户故意输入的空行。
+    """
     lines = [line.body for line in item.text_lines]
+    
+    # 尝试删除最后一个空行 (缓冲行2)
+    if lines and not lines[-1].strip():
+        lines.pop()
+        
+    # 尝试删除新的最后一个空行 (缓冲行1)
+    if lines and not lines[-1].strip():
+        lines.pop()
+        
     item["content"] = "\n".join(lines) 
 
 def sync_content_to_lines(item):
+    """
+    [V37.3] 将字符串拆分为多行文本。
+    逻辑：加载完成后，强制在末尾添加2个空行，确保首次点击即可使用Tab跳转。
+    """
     raw = item.get("content", "")
     item.text_lines.clear()
-    if not raw:
-        item.text_lines.add()
-        return
-    lines = raw.split("\n")
-    for txt in lines:
-        new_line = item.text_lines.add()
-        new_line.body = txt
+    
+    if raw:
+        lines = raw.split("\n")
+        for txt in lines:
+            new_line = item.text_lines.add()
+            new_line.body = txt
+            
+    # 双重缓冲：添加两行空行
+    item.text_lines.add()
+    item.text_lines.add()
 
 def save_runtime_data(scene):
-    """【写】将运行时列表序列化为 JSON 并写入 Text Block"""
+    """
+    【写】序列化 标签数据 + 全局设置
+    [V38.1] 升级为 Dict 结构，包含 settings 字段
+    """
     if getattr(scene, "ttag_is_loading", False): return
 
     text_block = scene.ttag_source_text
     if not text_block: return
 
+    # 1. 序列化标签数据
     data_list = []
     sorted_items = sorted(scene.ttag_runtime_items, key=lambda x: x.frame)
     
@@ -60,8 +84,26 @@ def save_runtime_data(scene):
         }
         data_list.append(entry)
     
+    # 2. 序列化全局设置 [V38.1 New]
+    settings_dict = {
+        "overwrite_3d": scene.ttag_overwrite,
+        "overwrite_markers": scene.ttag_overwrite_markers,
+        "live_sync": scene.ttag_live_sync,
+        "default_color": (scene.ttag_default_color[0], scene.ttag_default_color[1], scene.ttag_default_color[2]),
+        "global_align": scene.ttag_global_align,
+        "font_path": scene.ttag_font_path,
+        "line_spacing": scene.ttag_line_spacing
+    }
+
+    # 3. 组合最终 Payload
+    final_payload = {
+        "version": "V38",
+        "settings": settings_dict,
+        "data": data_list
+    }
+    
     text_block.clear()
-    text_block.write(json.dumps(data_list, indent=2, ensure_ascii=False))
+    text_block.write(json.dumps(final_payload, indent=2, ensure_ascii=False))
 
 def repair_invalid_json_text(raw_text):
     """[V36.5] 计数器算法修复反斜杠"""
@@ -102,7 +144,10 @@ def repair_invalid_json_text(raw_text):
     return "".join(result)
 
 def load_runtime_data(scene, operator=None, retry_count=0):
-    """【读】从 Text Block 读取 JSON"""
+    """
+    【读】从 Text Block 读取 JSON。
+    [V38.1] 支持兼容旧版 List 格式和新版 Dict 格式
+    """
     scene.ttag_is_loading = True
     try:
         text_block = scene.ttag_source_text
@@ -115,9 +160,9 @@ def load_runtime_data(scene, operator=None, retry_count=0):
             scene.ttag_runtime_items.clear()
             return 
 
-        data_list = None
+        json_data = None
         try:
-            data_list = json.loads(raw_text)
+            json_data = json.loads(raw_text)
         except json.JSONDecodeError as e:
             if retry_count == 0:
                 print(f"TTAG Info: JSON 解析失败，尝试智能修复... ({str(e)})")
@@ -139,11 +184,31 @@ def load_runtime_data(scene, operator=None, retry_count=0):
                 if operator: operator.report({'ERROR'}, msg)
                 return
 
-        if not isinstance(data_list, list): 
-            msg = "数据格式错误: 根节点必须是列表"
-            if operator: operator.report({'ERROR'}, msg)
+        # [V38.1] 格式分支处理
+        data_list = []
+        if isinstance(json_data, list):
+            # 旧版格式：纯列表
+            data_list = json_data
+        elif isinstance(json_data, dict):
+            # 新版格式：包含 settings 和 data
+            data_list = json_data.get("data", [])
+            settings = json_data.get("settings", {})
+            
+            # 恢复全局设置
+            if "overwrite_3d" in settings: scene.ttag_overwrite = settings["overwrite_3d"]
+            if "overwrite_markers" in settings: scene.ttag_overwrite_markers = settings["overwrite_markers"]
+            if "live_sync" in settings: scene.ttag_live_sync = settings["live_sync"]
+            if "default_color" in settings: 
+                c = settings["default_color"]
+                scene.ttag_default_color = (c[0], c[1], c[2])
+            if "global_align" in settings: scene.ttag_global_align = settings["global_align"]
+            if "font_path" in settings: scene.ttag_font_path = settings["font_path"]
+            if "line_spacing" in settings: scene.ttag_line_spacing = settings["line_spacing"]
+        else:
+            if operator: operator.report({'ERROR'}, "数据格式错误: 根节点类型未知")
             return
 
+        # 恢复列表数据
         scene.ttag_runtime_items.clear()
         for entry in data_list:
             item = scene.ttag_runtime_items.add()
@@ -156,6 +221,7 @@ def load_runtime_data(scene, operator=None, retry_count=0):
         
         if len(scene.ttag_runtime_items) > 0:
             scene.ttag_active_item_index = 0
+            
     finally:
         scene.ttag_is_loading = False
 
@@ -165,8 +231,39 @@ def update_source_text_ptr(self, context):
 def update_item_data(self, context):
     save_runtime_data(context.scene)
 
-def update_line_body(self, context):
+# [V38.1] 设置项的更新回调
+def update_settings(self, context):
     save_runtime_data(context.scene)
+
+def update_line_body(self, context):
+    """
+    [V37.3] 当文本行内容修改时触发。
+    实现 Tab 键无限输入流的核心逻辑 (双重缓冲)。
+    """
+    scene = context.scene
+    
+    # [V37.5 Fix] 关键修复：如果是加载过程，直接返回，禁止副作用（补行）
+    if getattr(scene, "ttag_is_loading", False): return
+
+    idx = scene.ttag_active_item_index
+    items = scene.ttag_runtime_items
+    
+    if 0 <= idx < len(items):
+        item = items[idx]
+        lines = item.text_lines
+        
+        # 确保列表至少有2行
+        while len(lines) < 2:
+            lines.add()
+            
+        # 智能缓冲逻辑
+        if lines[-1].body.strip() != "":
+            lines.add()
+            lines.add()
+        elif lines[-2].body.strip() != "":
+            lines.add()
+
+        save_runtime_data(scene)
 
 # =========================================================================
 # 2. 辅助函数
@@ -703,7 +800,7 @@ class TTAG_UL_List(UIList):
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V37.0"
+    bl_label = "Timeline Tags Pro V38.1"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -773,9 +870,18 @@ class TTAG_PT_Panel(Panel):
             if len(item.text_lines) == 0:
                 col.label(text="无文本", icon='ERROR')
             else:
+                total_lines = len(item.text_lines)
                 for idx, line in enumerate(item.text_lines):
                     row_line = col.row(align=True)
-                    row_line.prop(line, "body", text="")
+                    
+                    # 视觉提示
+                    if idx >= total_lines - 2:
+                        row_line.alert = True
+                        label_text = "Tab跳转" if idx == total_lines - 2 else "缓冲行"
+                        row_line.prop(line, "body", text=label_text)
+                    else:
+                        row_line.prop(line, "body", text="")
+                        
                     op_add = row_line.operator("ttag.insert_newline", text="", icon='ADD')
                     op_add.target_index = idx
                     op_del = row_line.operator("ttag.remove_text_line", text="", icon='X')
@@ -800,10 +906,9 @@ class TTAG_PT_Panel(Panel):
         sub_right = sub.row(align=True)
         sub_right.prop(scene, "ttag_line_spacing", text="行距")
         
-        # [V37.0] 调整布局顺序
         sub_right.prop(scene, "ttag_overwrite", text="", icon='FILE_REFRESH', toggle=True)
         sub_right.prop(scene, "ttag_global_align", text="", expand=True)
-        sub_right.prop(scene, "ttag_overwrite_markers", text="", icon='MARKER', toggle=True) # Moved here
+        sub_right.prop(scene, "ttag_overwrite_markers", text="", icon='MARKER', toggle=True)
         
         # Row 3
         row = box.row(align=True)
@@ -847,27 +952,63 @@ def register():
         description="当前激活的标签索引"
     )
     
-    bpy.types.Scene.ttag_overwrite = BoolProperty(name="Overwrite 3D", default=True, description="覆盖: 重新生成3D文字集合")
+    # [V38.1] 注册时绑定 update_settings 回调
+    bpy.types.Scene.ttag_overwrite = BoolProperty(
+        name="Overwrite 3D", 
+        default=True, 
+        description="覆盖: 重新生成3D文字集合",
+        update=update_settings
+    )
     
     bpy.types.Scene.ttag_overwrite_markers = BoolProperty(
         name="Overwrite Markers", 
         default=True, 
-        description="覆盖标记: 勾选则删除现有所有标记后重新生成；不勾选则在空闲位置追加新标记"
+        description="覆盖标记: 勾选则删除现有所有标记后重新生成；不勾选则在空闲位置追加新标记",
+        update=update_settings
     )
 
-    bpy.types.Scene.ttag_live_sync = BoolProperty(name="Sync", default=True, description="开启: 列表随时间轴自动滚动")
+    bpy.types.Scene.ttag_live_sync = BoolProperty(
+        name="Sync", 
+        default=True, 
+        description="开启: 列表随时间轴自动滚动",
+        update=update_settings
+    )
+    
     bpy.types.Scene.ttag_is_syncing_from_timeline = BoolProperty(default=False)
     bpy.types.Scene.ttag_lock_sync = BoolProperty(default=False)
-    bpy.types.Scene.ttag_default_color = FloatVectorProperty(name="Default Color", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0)
+    
+    bpy.types.Scene.ttag_default_color = FloatVectorProperty(
+        name="Default Color", 
+        subtype='COLOR', 
+        default=(1.0, 1.0, 1.0), 
+        min=0.0, max=1.0,
+        update=update_settings
+    )
     
     bpy.types.Scene.ttag_global_align = EnumProperty(
         name="Global Align",
-        items=[('LEFT', "Left", "左对齐", 'ALIGN_LEFT', 0), ('CENTER', "Center", "居中", 'ALIGN_CENTER', 1), ('RIGHT', "Right", "右对齐", 'ALIGN_RIGHT', 2)],
-        default='CENTER'
+        items=[
+            ('LEFT', "Left", "左对齐", 'ALIGN_LEFT', 0),
+            ('CENTER', "Center", "居中", 'ALIGN_CENTER', 1),
+            ('RIGHT', "Right", "右对齐", 'ALIGN_RIGHT', 2),
+        ],
+        default='CENTER',
+        update=update_settings
     )
     
-    bpy.types.Scene.ttag_font_path = StringProperty(name="烘焙字体", description="烘焙字体文件路径", subtype='FILE_PATH')
-    bpy.types.Scene.ttag_line_spacing = FloatProperty(name="行距", default=1.0)
+    bpy.types.Scene.ttag_font_path = StringProperty(
+        name="烘焙字体", 
+        description="烘焙字体文件路径", 
+        subtype='FILE_PATH',
+        update=update_settings
+    )
+    
+    bpy.types.Scene.ttag_line_spacing = FloatProperty(
+        name="行距", 
+        default=1.0, 
+        description="文字行间距",
+        update=update_settings
+    )
 
     if ttag_sync_handler not in bpy.app.handlers.frame_change_post: bpy.app.handlers.frame_change_post.append(ttag_sync_handler)
 
@@ -879,7 +1020,7 @@ def unregister():
     del bpy.types.Scene.ttag_is_loading
     del bpy.types.Scene.ttag_active_item_index
     del bpy.types.Scene.ttag_overwrite
-    del bpy.types.Scene.ttag_overwrite_markers # Cleanup
+    del bpy.types.Scene.ttag_overwrite_markers
     del bpy.types.Scene.ttag_live_sync
     del bpy.types.Scene.ttag_is_syncing_from_timeline
     del bpy.types.Scene.ttag_lock_sync
