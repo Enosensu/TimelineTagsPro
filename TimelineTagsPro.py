@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V38.1",
+    "name": "Timeline Tags Pro V39.1",
     "author": "Dev_BlenderPy",
-    "version": (38, 1),
+    "version": (39, 1),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "架构修复版：基于V37.5完整功能，新增全局设置（字体/对齐等）的自动保存与恢复。",
+    "description": "功能升级：新增智能行数控制，完全保留用户输入的空行数据，基于V39.0稳定架构。",
     "category": "Animation",
 }
 
@@ -23,45 +23,38 @@ from bpy_extras.io_utils import ImportHelper, ExportHelper
 # 1. 核心逻辑 (IO & Sync)
 # =========================================================================
 
+# 全局变量：用于存储防抖计时器
+_TTAG_SAVE_TIMER = None
+
 def sync_lines_to_content(item):
     """
-    [V37.4] 将多行文本合并为字符串。
-    逻辑更新：精准剔除最后两个用于Tab跳转的空行，保留用户故意输入的空行。
+    [V39.1] 将多行文本合并为字符串。
+    完全忠实于用户输入，不自动剔除任何末尾空行。
     """
     lines = [line.body for line in item.text_lines]
-    
-    # 尝试删除最后一个空行 (缓冲行2)
-    if lines and not lines[-1].strip():
-        lines.pop()
-        
-    # 尝试删除新的最后一个空行 (缓冲行1)
-    if lines and not lines[-1].strip():
-        lines.pop()
-        
     item["content"] = "\n".join(lines) 
 
 def sync_content_to_lines(item):
     """
-    [V37.3] 将字符串拆分为多行文本。
-    逻辑：加载完成后，强制在末尾添加2个空行，确保首次点击即可使用Tab跳转。
+    [V39.1] 将字符串拆分为多行文本。
+    完全还原保存的数据（包括空行）。
     """
     raw = item.get("content", "")
     item.text_lines.clear()
     
     if raw:
+        # split('\n') 会保留空行，忠实还原
         lines = raw.split("\n")
         for txt in lines:
             new_line = item.text_lines.add()
             new_line.body = txt
-            
-    # 双重缓冲：添加两行空行
-    item.text_lines.add()
-    item.text_lines.add()
+    else:
+        # 默认给一行，方便输入
+        item.text_lines.add()
 
-def save_runtime_data(scene):
+def save_runtime_data_immediate(scene):
     """
-    【写】序列化 标签数据 + 全局设置
-    [V38.1] 升级为 Dict 结构，包含 settings 字段
+    【立即保存】执行实际的 Text Block 写入操作。
     """
     if getattr(scene, "ttag_is_loading", False): return
 
@@ -75,7 +68,6 @@ def save_runtime_data(scene):
     for item in sorted_items:
         if len(item.text_lines) > 0:
             sync_lines_to_content(item)
-            
         entry = {
             "frame": item.frame,
             "summary": item.summary,
@@ -84,7 +76,7 @@ def save_runtime_data(scene):
         }
         data_list.append(entry)
     
-    # 2. 序列化全局设置 [V38.1 New]
+    # 2. 序列化全局设置
     settings_dict = {
         "overwrite_3d": scene.ttag_overwrite,
         "overwrite_markers": scene.ttag_overwrite_markers,
@@ -95,9 +87,8 @@ def save_runtime_data(scene):
         "line_spacing": scene.ttag_line_spacing
     }
 
-    # 3. 组合最终 Payload
     final_payload = {
-        "version": "V38",
+        "version": "V39.1",
         "settings": settings_dict,
         "data": data_list
     }
@@ -105,49 +96,56 @@ def save_runtime_data(scene):
     text_block.clear()
     text_block.write(json.dumps(final_payload, indent=2, ensure_ascii=False))
 
+def auto_save_debounced(scene):
+    """
+    【防抖保存】
+    用于文本输入、参数调整和行数调整。
+    延迟 0.8 秒执行保存。
+    """
+    global _TTAG_SAVE_TIMER
+    
+    if _TTAG_SAVE_TIMER is not None:
+        if bpy.app.timers.is_registered(_TTAG_SAVE_TIMER):
+            bpy.app.timers.unregister(_TTAG_SAVE_TIMER)
+    
+    def _save_task():
+        if scene.ttag_source_text:
+            save_runtime_data_immediate(scene)
+        return None 
+
+    _TTAG_SAVE_TIMER = _save_task
+    bpy.app.timers.register(_TTAG_SAVE_TIMER, first_interval=0.8)
+
 def repair_invalid_json_text(raw_text):
-    """[V36.5] 计数器算法修复反斜杠"""
     result = []
     i = 0
     n = len(raw_text)
-    
     while i < n:
         char = raw_text[i]
         if char == '\\':
             start = i
-            while i < n and raw_text[i] == '\\':
-                i += 1
+            while i < n and raw_text[i] == '\\': i += 1
             bs_count = i - start
             result.append('\\' * bs_count)
             if bs_count % 2 == 1:
                 if i < n:
                     next_char = raw_text[i]
-                    if next_char in '"\\/bfnrt':
-                        pass
+                    if next_char in '"\\/bfnrt': pass
                     elif next_char == 'u':
                         is_hex = False
                         if i + 4 < n:
-                            try:
-                                int(raw_text[i+1:i+5], 16)
-                                is_hex = True
-                            except ValueError:
-                                pass
-                        if not is_hex:
-                            result.append('\\')
-                    else:
-                        result.append('\\')
-                else:
-                    result.append('\\')
+                            try: int(raw_text[i+1:i+5], 16); is_hex = True
+                            except: pass
+                        if not is_hex: result.append('\\')
+                    else: result.append('\\')
+                else: result.append('\\')
         else:
             result.append(char)
             i += 1
     return "".join(result)
 
 def load_runtime_data(scene, operator=None, retry_count=0):
-    """
-    【读】从 Text Block 读取 JSON。
-    [V38.1] 支持兼容旧版 List 格式和新版 Dict 格式
-    """
+    """【读】反序列化 (兼容 List/Dict)"""
     scene.ttag_is_loading = True
     try:
         text_block = scene.ttag_source_text
@@ -165,36 +163,30 @@ def load_runtime_data(scene, operator=None, retry_count=0):
             json_data = json.loads(raw_text)
         except json.JSONDecodeError as e:
             if retry_count == 0:
-                print(f"TTAG Info: JSON 解析失败，尝试智能修复... ({str(e)})")
+                print(f"TTAG Info: JSON Fix... ({str(e)})")
                 fixed_text = repair_invalid_json_text(raw_text)
                 if fixed_text != raw_text:
                     text_block.clear()
                     text_block.write(fixed_text)
-                    if operator:
-                        operator.report({'WARNING'}, "检测到复杂转义符错误，已自动修复并重载。")
+                    if operator: operator.report({'WARNING'}, "检测到格式错误，已自动修复。")
                     scene.ttag_is_loading = False 
                     load_runtime_data(scene, operator, retry_count=1)
                     return
                 else:
-                    msg = f"JSON 严重格式错误 (无法自动修复): {str(e)}"
-                    if operator: operator.report({'ERROR'}, msg)
+                    if operator: operator.report({'ERROR'}, f"JSON Error: {str(e)}")
                     return
             else:
-                msg = f"修复后依然无效: {str(e)}"
-                if operator: operator.report({'ERROR'}, msg)
+                if operator: operator.report({'ERROR'}, f"JSON Error: {str(e)}")
                 return
 
-        # [V38.1] 格式分支处理
         data_list = []
         if isinstance(json_data, list):
-            # 旧版格式：纯列表
             data_list = json_data
         elif isinstance(json_data, dict):
-            # 新版格式：包含 settings 和 data
             data_list = json_data.get("data", [])
             settings = json_data.get("settings", {})
             
-            # 恢复全局设置
+            # 恢复设置
             if "overwrite_3d" in settings: scene.ttag_overwrite = settings["overwrite_3d"]
             if "overwrite_markers" in settings: scene.ttag_overwrite_markers = settings["overwrite_markers"]
             if "live_sync" in settings: scene.ttag_live_sync = settings["live_sync"]
@@ -208,7 +200,6 @@ def load_runtime_data(scene, operator=None, retry_count=0):
             if operator: operator.report({'ERROR'}, "数据格式错误: 根节点类型未知")
             return
 
-        # 恢复列表数据
         scene.ttag_runtime_items.clear()
         for entry in data_list:
             item = scene.ttag_runtime_items.add()
@@ -229,41 +220,14 @@ def update_source_text_ptr(self, context):
     load_runtime_data(self, operator=None)
 
 def update_item_data(self, context):
-    save_runtime_data(context.scene)
+    auto_save_debounced(context.scene)
 
-# [V38.1] 设置项的更新回调
 def update_settings(self, context):
-    save_runtime_data(context.scene)
+    auto_save_debounced(context.scene)
 
 def update_line_body(self, context):
-    """
-    [V37.3] 当文本行内容修改时触发。
-    实现 Tab 键无限输入流的核心逻辑 (双重缓冲)。
-    """
-    scene = context.scene
-    
-    # [V37.5 Fix] 关键修复：如果是加载过程，直接返回，禁止副作用（补行）
-    if getattr(scene, "ttag_is_loading", False): return
-
-    idx = scene.ttag_active_item_index
-    items = scene.ttag_runtime_items
-    
-    if 0 <= idx < len(items):
-        item = items[idx]
-        lines = item.text_lines
-        
-        # 确保列表至少有2行
-        while len(lines) < 2:
-            lines.add()
-            
-        # 智能缓冲逻辑
-        if lines[-1].body.strip() != "":
-            lines.add()
-            lines.add()
-        elif lines[-2].body.strip() != "":
-            lines.add()
-
-        save_runtime_data(scene)
+    if getattr(context.scene, "ttag_is_loading", False): return
+    auto_save_debounced(context.scene)
 
 # =========================================================================
 # 2. 辅助函数
@@ -282,14 +246,9 @@ def frame_to_timecode(frame, fps):
     s = int(total % 60)
     ms = int(round((total - int(total)) * 1000))
     if ms >= 1000:
-        ms = 0
-        s += 1
-        if s >= 60:
-            s = 0
-            m += 1
-            if m >= 60:
-                m = 0
-                h += 1
+        ms = 0; s += 1
+        if s >= 60: s = 0; m += 1
+        if m >= 60: m = 0; h += 1
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 def timecode_to_frame(timecode, fps):
@@ -306,7 +265,6 @@ def update_item_index(self, context):
     if getattr(scene, "ttag_lock_sync", False): return
     if getattr(scene, "ttag_is_syncing_from_timeline", False): return
     if not getattr(scene, "ttag_live_sync", False): return
-    
     items = scene.ttag_runtime_items
     idx = scene.ttag_active_item_index
     if 0 <= idx < len(items):
@@ -316,14 +274,11 @@ def update_item_index(self, context):
 def ttag_sync_handler(scene):
     if not getattr(scene, "ttag_live_sync", False): return
     if getattr(scene, "ttag_lock_sync", False): return
-    
     items = scene.ttag_runtime_items
     if len(items) == 0: return
-    
     curr = scene.frame_current
     best_idx = -1
     max_frame = -999999
-    
     for i, item in enumerate(items):
         if item.frame <= curr:
             if item.frame > max_frame:
@@ -340,15 +295,63 @@ def ttag_sync_handler(scene):
 # 3. 数据结构
 # =========================================================================
 
+# [V39.1] 行数控制 Get/Set
+def get_line_count(self):
+    return len(self.text_lines)
+
+def set_line_count(self, value):
+    # 如果正在加载数据，不允许通过Setter修改（防止循环触发）
+    # 但由于这是UI操作触发，通常is_loading为False
+    current = len(self.text_lines)
+    
+    # 1. 查找最后一行有文字的索引
+    last_content_idx = -1
+    for i, line in enumerate(self.text_lines):
+        if line.body.strip():
+            last_content_idx = i
+            
+    # 2. 计算允许的最小值 (例如索引为0，则最小行数为1)
+    min_allowed = last_content_idx + 1
+    # 至少保留1行
+    min_allowed = max(1, min_allowed)
+    
+    # 3. 约束目标值
+    target = max(value, min_allowed)
+    
+    # 4. 执行增删
+    if target > current:
+        for _ in range(target - current):
+            self.text_lines.add()
+    elif target < current:
+        # 从末尾删除
+        for _ in range(current - target):
+            self.text_lines.remove(len(self.text_lines) - 1)
+            
+    # 5. 触发防抖保存
+    try:
+        if bpy.context and bpy.context.scene:
+            auto_save_debounced(bpy.context.scene)
+    except: pass
+
 class TTAG_TextLine(PropertyGroup):
-    body: StringProperty(name="Text", default="", update=update_line_body, description="单行文本内容")
+    body: StringProperty(name="Text", default="", update=update_line_body)
 
 class TTAG_Item(PropertyGroup):
-    frame: IntProperty(name="Frame", default=1, update=update_item_data, description="标签帧号")
-    summary: StringProperty(name="Label", default="Tag", update=update_item_data, description="标签标题")
+    frame: IntProperty(name="Frame", default=1, update=update_item_data)
+    summary: StringProperty(name="Label", default="Tag", update=update_item_data)
     content: StringProperty(name="Content", default="") 
     text_lines: CollectionProperty(type=TTAG_TextLine)
-    color: FloatVectorProperty(name="Color", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0, update=update_item_data, description="标签颜色")
+    color: FloatVectorProperty(name="Color", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0, update=update_item_data)
+    
+    # [V39.1] 注册行数属性
+    line_count: IntProperty(
+        name="Line Count",
+        description="调整行数（不会删除已输入文字的行）",
+        default=1,
+        min=1,
+        get=get_line_count,
+        set=set_line_count
+    )
 
 # =========================================================================
 # 4. 操作符
@@ -379,7 +382,7 @@ class TTAG_OT_Insert_Newline(Operator):
         item.text_lines.move(new_idx, insert_pos)
         
         sync_lines_to_content(item)
-        save_runtime_data(scene)
+        save_runtime_data_immediate(scene) # 结构性改变立即保存
         return {'FINISHED'}
 
 class TTAG_OT_Remove_Text_Line(Operator):
@@ -401,7 +404,7 @@ class TTAG_OT_Remove_Text_Line(Operator):
             if len(item.text_lines) == 0:
                 item.text_lines.add()
             sync_lines_to_content(item)
-            save_runtime_data(scene)
+            save_runtime_data_immediate(scene)
         return {'FINISHED'}
 
 class TTAG_OT_Copy_Clipboard(Operator):
@@ -435,7 +438,7 @@ class TTAG_OT_Paste_Clipboard(Operator):
         item = items[scene.ttag_active_item_index]
         item.content = content
         sync_content_to_lines(item)
-        save_runtime_data(scene)
+        save_runtime_data_immediate(scene)
         self.report({'INFO'}, "已粘贴")
         return {'FINISHED'}
 
@@ -478,7 +481,7 @@ class TTAG_OT_List_Action(Operator):
                 if idx < list_len - 1:
                     items.move(idx, idx + 1)
                     scene.ttag_active_item_index += 1 
-            save_runtime_data(scene)
+            save_runtime_data_immediate(scene)
         finally:
             scene.ttag_lock_sync = False
         return {'FINISHED'}
@@ -490,8 +493,7 @@ class TTAG_OT_Reload_From_Text(Operator):
     bl_options = {'REGISTER', 'UNDO'}
     def execute(self, context):
         load_runtime_data(context.scene, operator=self)
-        if context.scene.ttag_runtime_items:
-            self.report({'INFO'}, "数据已加载")
+        self.report({'INFO'}, "数据已加载")
         return {'FINISHED'}
 
 class TTAG_OT_Sort_By_Frame(Operator):
@@ -515,7 +517,7 @@ class TTAG_OT_Sort_By_Frame(Operator):
                         min_idx = j
                 if min_idx != i:
                     items.move(min_idx, i)
-            save_runtime_data(scene)
+            save_runtime_data_immediate(scene)
         finally:
             scene.ttag_lock_sync = False
         return {'FINISHED'}
@@ -603,7 +605,7 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
             item.color = scene.ttag_default_color
             sync_content_to_lines(item) 
             
-        save_runtime_data(scene)
+        save_runtime_data_immediate(scene)
         self.report({'INFO'}, f"导入 {len(matches)} 条")
         return {'FINISHED'}
 
@@ -636,7 +638,7 @@ class TTAG_OT_Bake_3D_Text(Operator):
             
         items = scene.ttag_runtime_items
         if len(items) == 0: return {'CANCELLED'}
-        save_runtime_data(scene) 
+        save_runtime_data_immediate(scene) 
         
         loaded_font = None
         raw_path = scene.ttag_font_path.strip()
@@ -686,7 +688,7 @@ class TTAG_OT_Bake_3D_Text(Operator):
         sorted_items = sorted(items, key=lambda x: x.frame)
         for i, item in enumerate(sorted_items):
             sync_lines_to_content(item)
-            full_text = item.content
+            full_text = item.content # [V39.1] 保留空行，完全忠实
             if not full_text: full_text = " "
             
             font_curve = bpy.data.curves.new(type="FONT", name=f"TTAG_Data_{item.frame}")
@@ -730,10 +732,8 @@ class TTAG_OT_Bake_3D_Text(Operator):
                     obj.keyframe_insert(data_path="hide_render", frame=next_item_frame)
             
             if not item.content.strip():
-                obj.hide_viewport = True
-                obj.hide_render = True
-                obj.keyframe_insert(data_path="hide_viewport", frame=item.frame)
-                obj.keyframe_insert(data_path="hide_render", frame=item.frame)
+                # 即使是空内容，也生成物体(含换行符)，不强制隐藏，保持逻辑一致
+                pass
             
             if obj.animation_data and obj.animation_data.action:
                 for fcurve in obj.animation_data.action.fcurves:
@@ -755,7 +755,7 @@ class TTAG_OT_Bake_Timeline_Markers(Operator):
         scene = context.scene
         items = scene.ttag_runtime_items
         if len(items) == 0: return {'CANCELLED'}
-        save_runtime_data(scene) 
+        save_runtime_data_immediate(scene) 
         
         # 时间轴标记处理
         if scene.ttag_overwrite_markers:
@@ -780,7 +780,6 @@ class TTAG_OT_Bake_Timeline_Markers(Operator):
                 scene.timeline_markers.new(name=m_name, frame=m_frame)
                 occupied_frames.add(m_frame)
             except Exception as e:
-                # 理论上不应发生，但也防守一下
                 print(f"Failed to add marker at {m_frame}: {e}")
 
         self.report({'INFO'}, "时间轴标记已添加")
@@ -800,7 +799,7 @@ class TTAG_UL_List(UIList):
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V38.1"
+    bl_label = "Timeline Tags Pro V39.1"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -858,7 +857,10 @@ class TTAG_PT_Panel(Panel):
             box = layout.box()
             col = box.column(align=True)
             
-            col.label(text="内容编辑 (Content Edit):", icon='TEXT')
+            # [V39.1] 标题栏新增行数控制
+            row_header = col.row(align=True)
+            row_header.label(text="内容编辑 (Content Edit):", icon='TEXT')
+            row_header.prop(item, "line_count", text="行数")
             
             row_tools = col.row(align=True)
             row_tools.scale_y = 1.2
@@ -870,18 +872,9 @@ class TTAG_PT_Panel(Panel):
             if len(item.text_lines) == 0:
                 col.label(text="无文本", icon='ERROR')
             else:
-                total_lines = len(item.text_lines)
                 for idx, line in enumerate(item.text_lines):
                     row_line = col.row(align=True)
-                    
-                    # 视觉提示
-                    if idx >= total_lines - 2:
-                        row_line.alert = True
-                        label_text = "Tab跳转" if idx == total_lines - 2 else "缓冲行"
-                        row_line.prop(line, "body", text=label_text)
-                    else:
-                        row_line.prop(line, "body", text="")
-                        
+                    row_line.prop(line, "body", text="")
                     op_add = row_line.operator("ttag.insert_newline", text="", icon='ADD')
                     op_add.target_index = idx
                     op_del = row_line.operator("ttag.remove_text_line", text="", icon='X')
@@ -952,7 +945,7 @@ def register():
         description="当前激活的标签索引"
     )
     
-    # [V38.1] 注册时绑定 update_settings 回调
+    # [V39.0] 注册时绑定防抖保存回调
     bpy.types.Scene.ttag_overwrite = BoolProperty(
         name="Overwrite 3D", 
         default=True, 
