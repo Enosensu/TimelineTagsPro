@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V39.1",
+    "name": "Timeline Tags Pro V39.3",
     "author": "Dev_BlenderPy",
-    "version": (39, 1),
+    "version": (39, 3),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "功能升级：新增智能行数控制，完全保留用户输入的空行数据，基于V39.0稳定架构。",
+    "description": "完整无损版：修复代码截断丢失注册项的问题，安全加入置顶添加空行功能。",
     "category": "Animation",
 }
 
@@ -88,7 +88,7 @@ def save_runtime_data_immediate(scene):
     }
 
     final_payload = {
-        "version": "V39.1",
+        "version": "V39.3",
         "settings": settings_dict,
         "data": data_list
     }
@@ -295,39 +295,29 @@ def ttag_sync_handler(scene):
 # 3. 数据结构
 # =========================================================================
 
-# [V39.1] 行数控制 Get/Set
+# 行数控制 Get/Set
 def get_line_count(self):
     return len(self.text_lines)
 
 def set_line_count(self, value):
-    # 如果正在加载数据，不允许通过Setter修改（防止循环触发）
-    # 但由于这是UI操作触发，通常is_loading为False
     current = len(self.text_lines)
-    
-    # 1. 查找最后一行有文字的索引
     last_content_idx = -1
     for i, line in enumerate(self.text_lines):
         if line.body.strip():
             last_content_idx = i
             
-    # 2. 计算允许的最小值 (例如索引为0，则最小行数为1)
     min_allowed = last_content_idx + 1
-    # 至少保留1行
     min_allowed = max(1, min_allowed)
     
-    # 3. 约束目标值
     target = max(value, min_allowed)
     
-    # 4. 执行增删
     if target > current:
         for _ in range(target - current):
             self.text_lines.add()
     elif target < current:
-        # 从末尾删除
         for _ in range(current - target):
             self.text_lines.remove(len(self.text_lines) - 1)
             
-    # 5. 触发防抖保存
     try:
         if bpy.context and bpy.context.scene:
             auto_save_debounced(bpy.context.scene)
@@ -343,7 +333,6 @@ class TTAG_Item(PropertyGroup):
     text_lines: CollectionProperty(type=TTAG_TextLine)
     color: FloatVectorProperty(name="Color", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0, update=update_item_data)
     
-    # [V39.1] 注册行数属性
     line_count: IntProperty(
         name="Line Count",
         description="调整行数（不会删除已输入文字的行）",
@@ -356,6 +345,26 @@ class TTAG_Item(PropertyGroup):
 # =========================================================================
 # 4. 操作符
 # =========================================================================
+
+class TTAG_OT_Insert_Top_Line(Operator):
+    bl_idname = "ttag.insert_top_line"
+    bl_label = "置顶插入空行"
+    bl_description = "在当前文本框的最上方添加一行新空行"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        items = scene.ttag_runtime_items
+        if len(items) == 0: return {'CANCELLED'}
+        
+        item = items[scene.ttag_active_item_index]
+        
+        item.text_lines.add()
+        item.text_lines.move(len(item.text_lines) - 1, 0)
+        
+        sync_lines_to_content(item)
+        save_runtime_data_immediate(scene)
+        return {'FINISHED'}
 
 class TTAG_OT_Insert_Newline(Operator):
     bl_idname = "ttag.insert_newline"
@@ -382,7 +391,7 @@ class TTAG_OT_Insert_Newline(Operator):
         item.text_lines.move(new_idx, insert_pos)
         
         sync_lines_to_content(item)
-        save_runtime_data_immediate(scene) # 结构性改变立即保存
+        save_runtime_data_immediate(scene) 
         return {'FINISHED'}
 
 class TTAG_OT_Remove_Text_Line(Operator):
@@ -688,7 +697,7 @@ class TTAG_OT_Bake_3D_Text(Operator):
         sorted_items = sorted(items, key=lambda x: x.frame)
         for i, item in enumerate(sorted_items):
             sync_lines_to_content(item)
-            full_text = item.content # [V39.1] 保留空行，完全忠实
+            full_text = item.content
             if not full_text: full_text = " "
             
             font_curve = bpy.data.curves.new(type="FONT", name=f"TTAG_Data_{item.frame}")
@@ -733,7 +742,7 @@ class TTAG_OT_Bake_3D_Text(Operator):
             
             if not item.content.strip():
                 # 即使是空内容，也生成物体(含换行符)，不强制隐藏，保持逻辑一致
-                pass
+                pass 
             
             if obj.animation_data and obj.animation_data.action:
                 for fcurve in obj.animation_data.action.fcurves:
@@ -799,7 +808,7 @@ class TTAG_UL_List(UIList):
         sub_split.prop(item, "summary", text="", emboss=False)
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V39.1"
+    bl_label = "Timeline Tags Pro V39.3"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -866,6 +875,8 @@ class TTAG_PT_Panel(Panel):
             row_tools.scale_y = 1.2
             row_tools.operator("ttag.copy_clipboard", text="复制", icon='COPYDOWN')
             row_tools.operator("ttag.paste_clipboard", text="粘贴", icon='PASTEDOWN')
+            # [V39.3] 新增：置顶插入空行按钮
+            row_tools.operator("ttag.insert_top_line", text="", icon='ADD')
             
             col.separator()
             
@@ -916,14 +927,20 @@ class TTAG_PT_Panel(Panel):
 classes = (
     TTAG_TextLine,
     TTAG_Item, 
-    TTAG_OT_Insert_Newline, TTAG_OT_Remove_Text_Line,
-    TTAG_OT_Export_SRT, TTAG_OT_Import_SRT,
-    TTAG_OT_List_Action, TTAG_OT_Copy_Clipboard, TTAG_OT_Paste_Clipboard, 
+    TTAG_OT_Insert_Top_Line,
+    TTAG_OT_Insert_Newline, 
+    TTAG_OT_Remove_Text_Line,
+    TTAG_OT_Export_SRT, 
+    TTAG_OT_Import_SRT,
+    TTAG_OT_List_Action, 
+    TTAG_OT_Copy_Clipboard, 
+    TTAG_OT_Paste_Clipboard, 
     TTAG_OT_Reload_From_Text,
     TTAG_OT_Sort_By_Frame, 
     TTAG_OT_Bake_3D_Text,
     TTAG_OT_Bake_Timeline_Markers,
-    TTAG_UL_List, TTAG_PT_Panel,
+    TTAG_UL_List, 
+    TTAG_PT_Panel,
 )
 
 def register():
@@ -945,7 +962,6 @@ def register():
         description="当前激活的标签索引"
     )
     
-    # [V39.0] 注册时绑定防抖保存回调
     bpy.types.Scene.ttag_overwrite = BoolProperty(
         name="Overwrite 3D", 
         default=True, 
