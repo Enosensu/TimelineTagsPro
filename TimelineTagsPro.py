@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V39.3",
+    "name": "Timeline Tags Pro V39.4",
     "author": "Dev_BlenderPy",
-    "version": (39, 3),
+    "version": (39, 4),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "完整无损版：修复代码截断丢失注册项的问题，安全加入置顶添加空行功能。",
+    "description": "UI交互完善：恢复原生输入框样式，支持多选拖拽时的蓝色高亮显示。",
     "category": "Animation",
 }
 
@@ -28,7 +28,7 @@ _TTAG_SAVE_TIMER = None
 
 def sync_lines_to_content(item):
     """
-    [V39.1] 将多行文本合并为字符串。
+    将多行文本合并为字符串。
     完全忠实于用户输入，不自动剔除任何末尾空行。
     """
     lines = [line.body for line in item.text_lines]
@@ -36,7 +36,7 @@ def sync_lines_to_content(item):
 
 def sync_content_to_lines(item):
     """
-    [V39.1] 将字符串拆分为多行文本。
+    将字符串拆分为多行文本。
     完全还原保存的数据（包括空行）。
     """
     raw = item.get("content", "")
@@ -88,7 +88,7 @@ def save_runtime_data_immediate(scene):
     }
 
     final_payload = {
-        "version": "V39.3",
+        "version": "V39.4",
         "settings": settings_dict,
         "data": data_list
     }
@@ -741,7 +741,7 @@ class TTAG_OT_Bake_3D_Text(Operator):
                     obj.keyframe_insert(data_path="hide_render", frame=next_item_frame)
             
             if not item.content.strip():
-                # 即使是空内容，也生成物体(含换行符)，不强制隐藏，保持逻辑一致
+                # 空内容依然生成物体（占位），但隐藏
                 pass 
             
             if obj.animation_data and obj.animation_data.action:
@@ -804,8 +804,9 @@ class TTAG_UL_List(UIList):
         split.prop(item, "color", text="", icon_only=True, emboss=True)
         right_area = split.row(align=True)
         sub_split = right_area.split(factor=0.5)
-        sub_split.prop(item, "frame", text="", emboss=False)
-        sub_split.prop(item, "summary", text="", emboss=False)
+        # [V39.4] 移除 emboss=False，恢复原生带背景的输入框，支持多选拖拽时的蓝色高亮
+        sub_split.prop(item, "frame", text="")
+        sub_split.prop(item, "summary", text="")
 
 class TTAG_PT_Panel(Panel):
     bl_label = "Timeline Tags Pro V39.3"
@@ -866,7 +867,7 @@ class TTAG_PT_Panel(Panel):
             box = layout.box()
             col = box.column(align=True)
             
-            # [V39.1] 标题栏新增行数控制
+            # 标题栏新增行数控制
             row_header = col.row(align=True)
             row_header.label(text="内容编辑 (Content Edit):", icon='TEXT')
             row_header.prop(item, "line_count", text="行数")
@@ -875,7 +876,7 @@ class TTAG_PT_Panel(Panel):
             row_tools.scale_y = 1.2
             row_tools.operator("ttag.copy_clipboard", text="复制", icon='COPYDOWN')
             row_tools.operator("ttag.paste_clipboard", text="粘贴", icon='PASTEDOWN')
-            # [V39.3] 新增：置顶插入空行按钮
+            # 新增：置顶插入空行按钮
             row_tools.operator("ttag.insert_top_line", text="", icon='ADD')
             
             col.separator()
