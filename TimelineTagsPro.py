@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V39.4",
+    "name": "Timeline Tags Pro V39.6",
     "author": "Dev_BlenderPy",
-    "version": (39, 4),
+    "version": (39, 6),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "UI交互完善：恢复原生输入框样式，支持多选拖拽时的蓝色高亮显示。",
+    "description": "终极版：UI完美收缩，强制预留右侧点击安全区，包含行数控制与防抖保存。",
     "category": "Animation",
 }
 
@@ -88,7 +88,7 @@ def save_runtime_data_immediate(scene):
     }
 
     final_payload = {
-        "version": "V39.4",
+        "version": "V39.6",
         "settings": settings_dict,
         "data": data_list
     }
@@ -100,7 +100,7 @@ def auto_save_debounced(scene):
     """
     【防抖保存】
     用于文本输入、参数调整和行数调整。
-    延迟 0.8 秒执行保存。
+    延迟 0.8 秒执行保存，解决打字失焦问题。
     """
     global _TTAG_SAVE_TIMER
     
@@ -391,7 +391,7 @@ class TTAG_OT_Insert_Newline(Operator):
         item.text_lines.move(new_idx, insert_pos)
         
         sync_lines_to_content(item)
-        save_runtime_data_immediate(scene) 
+        save_runtime_data_immediate(scene)
         return {'FINISHED'}
 
 class TTAG_OT_Remove_Text_Line(Operator):
@@ -741,7 +741,6 @@ class TTAG_OT_Bake_3D_Text(Operator):
                     obj.keyframe_insert(data_path="hide_render", frame=next_item_frame)
             
             if not item.content.strip():
-                # 空内容依然生成物体（占位），但隐藏
                 pass 
             
             if obj.animation_data and obj.animation_data.action:
@@ -800,16 +799,27 @@ class TTAG_OT_Bake_Timeline_Markers(Operator):
 
 class TTAG_UL_List(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        split = layout.split(factor=0.12)
-        split.prop(item, "color", text="", icon_only=True, emboss=True)
-        right_area = split.row(align=True)
-        sub_split = right_area.split(factor=0.5)
-        # [V39.4] 移除 emboss=False，恢复原生带背景的输入框，支持多选拖拽时的蓝色高亮
-        sub_split.prop(item, "frame", text="")
-        sub_split.prop(item, "summary", text="")
+        # [V39.6 核心修复] 使用多级 split 加上 empty column 强制生效百分比留白，同时保留默认背景
+        
+        # 1. 整体划分为: 左(12%给颜色) | 右(88%给其他)
+        split_main = layout.split(factor=0.12)
+        split_main.prop(item, "color", text="", icon_only=True)
+        
+        # 2. 将刚才的右侧(88%)，再划分为: 左(35%给帧数) | 右(65%给剩余)
+        split_right = split_main.split(factor=0.35)
+        # 注意: 移除了 emboss=False，恢复原生输入框，支持鼠标拖拽蓝色高亮
+        split_right.prop(item, "frame", text="")
+        
+        # 3. 将最后的剩余部分(65%)，再划分为: 左(85%给标签名) | 右(15%给纯留白安全区)
+        split_summary = split_right.split(factor=0.85)
+        split_summary.prop(item, "summary", text="")
+        
+        # 【收缩逻辑的关键】必须在这个最后的右侧槽位放入一个空的 column。
+        # 否则 Blender UI 引擎会自动忽略 split 设定，让 summary 强行拉伸填满整行。
+        split_summary.column()
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V39.3"
+    bl_label = "Timeline Tags Pro V39.6"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -867,7 +877,7 @@ class TTAG_PT_Panel(Panel):
             box = layout.box()
             col = box.column(align=True)
             
-            # 标题栏新增行数控制
+            # [V39.1] 标题栏新增行数控制
             row_header = col.row(align=True)
             row_header.label(text="内容编辑 (Content Edit):", icon='TEXT')
             row_header.prop(item, "line_count", text="行数")
@@ -876,7 +886,7 @@ class TTAG_PT_Panel(Panel):
             row_tools.scale_y = 1.2
             row_tools.operator("ttag.copy_clipboard", text="复制", icon='COPYDOWN')
             row_tools.operator("ttag.paste_clipboard", text="粘贴", icon='PASTEDOWN')
-            # 新增：置顶插入空行按钮
+            # [V39.3] 新增：置顶插入空行按钮
             row_tools.operator("ttag.insert_top_line", text="", icon='ADD')
             
             col.separator()
