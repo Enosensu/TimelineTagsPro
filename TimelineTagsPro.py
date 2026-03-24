@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V39.6",
+    "name": "Timeline Tags Pro V41.0",
     "author": "Dev_BlenderPy",
-    "version": (39, 6),
+    "version": (41, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "终极版：UI完美收缩，强制预留右侧点击安全区，包含行数控制与防抖保存。",
+    "description": "稳定回归版：基于 V39.6 架构，精准注入 Blender 5.1 的 CDT 与 EVEN_ODD 填充适配。",
     "category": "Animation",
 }
 
@@ -56,10 +56,12 @@ def save_runtime_data_immediate(scene):
     """
     【立即保存】执行实际的 Text Block 写入操作。
     """
-    if getattr(scene, "ttag_is_loading", False): return
+    if getattr(scene, "ttag_is_loading", False): 
+        return
 
     text_block = scene.ttag_source_text
-    if not text_block: return
+    if not text_block: 
+        return
 
     # 1. 序列化标签数据
     data_list = []
@@ -88,7 +90,7 @@ def save_runtime_data_immediate(scene):
     }
 
     final_payload = {
-        "version": "V39.6",
+        "version": "V41.0",
         "settings": settings_dict,
         "data": data_list
     }
@@ -124,21 +126,29 @@ def repair_invalid_json_text(raw_text):
         char = raw_text[i]
         if char == '\\':
             start = i
-            while i < n and raw_text[i] == '\\': i += 1
+            while i < n and raw_text[i] == '\\': 
+                i += 1
             bs_count = i - start
             result.append('\\' * bs_count)
             if bs_count % 2 == 1:
                 if i < n:
                     next_char = raw_text[i]
-                    if next_char in '"\\/bfnrt': pass
+                    if next_char in '"\\/bfnrt': 
+                        pass
                     elif next_char == 'u':
                         is_hex = False
                         if i + 4 < n:
-                            try: int(raw_text[i+1:i+5], 16); is_hex = True
-                            except: pass
-                        if not is_hex: result.append('\\')
-                    else: result.append('\\')
-                else: result.append('\\')
+                            try: 
+                                int(raw_text[i+1:i+5], 16)
+                                is_hex = True
+                            except ValueError: 
+                                pass
+                        if not is_hex: 
+                            result.append('\\')
+                    else: 
+                        result.append('\\')
+                else: 
+                    result.append('\\')
         else:
             result.append(char)
             i += 1
@@ -168,15 +178,18 @@ def load_runtime_data(scene, operator=None, retry_count=0):
                 if fixed_text != raw_text:
                     text_block.clear()
                     text_block.write(fixed_text)
-                    if operator: operator.report({'WARNING'}, "检测到格式错误，已自动修复。")
+                    if operator: 
+                        operator.report({'WARNING'}, "检测到格式错误，已自动修复。")
                     scene.ttag_is_loading = False 
                     load_runtime_data(scene, operator, retry_count=1)
                     return
                 else:
-                    if operator: operator.report({'ERROR'}, f"JSON Error: {str(e)}")
+                    if operator: 
+                        operator.report({'ERROR'}, f"JSON Error: {str(e)}")
                     return
             else:
-                if operator: operator.report({'ERROR'}, f"JSON Error: {str(e)}")
+                if operator: 
+                    operator.report({'ERROR'}, f"JSON Error: {str(e)}")
                 return
 
         data_list = []
@@ -187,17 +200,24 @@ def load_runtime_data(scene, operator=None, retry_count=0):
             settings = json_data.get("settings", {})
             
             # 恢复设置
-            if "overwrite_3d" in settings: scene.ttag_overwrite = settings["overwrite_3d"]
-            if "overwrite_markers" in settings: scene.ttag_overwrite_markers = settings["overwrite_markers"]
-            if "live_sync" in settings: scene.ttag_live_sync = settings["live_sync"]
+            if "overwrite_3d" in settings: 
+                scene.ttag_overwrite = settings["overwrite_3d"]
+            if "overwrite_markers" in settings: 
+                scene.ttag_overwrite_markers = settings["overwrite_markers"]
+            if "live_sync" in settings: 
+                scene.ttag_live_sync = settings["live_sync"]
             if "default_color" in settings: 
                 c = settings["default_color"]
                 scene.ttag_default_color = (c[0], c[1], c[2])
-            if "global_align" in settings: scene.ttag_global_align = settings["global_align"]
-            if "font_path" in settings: scene.ttag_font_path = settings["font_path"]
-            if "line_spacing" in settings: scene.ttag_line_spacing = settings["line_spacing"]
+            if "global_align" in settings: 
+                scene.ttag_global_align = settings["global_align"]
+            if "font_path" in settings: 
+                scene.ttag_font_path = settings["font_path"]
+            if "line_spacing" in settings: 
+                scene.ttag_line_spacing = settings["line_spacing"]
         else:
-            if operator: operator.report({'ERROR'}, "数据格式错误: 根节点类型未知")
+            if operator: 
+                operator.report({'ERROR'}, "数据格式错误: 根节点类型未知")
             return
 
         scene.ttag_runtime_items.clear()
@@ -226,7 +246,8 @@ def update_settings(self, context):
     auto_save_debounced(context.scene)
 
 def update_line_body(self, context):
-    if getattr(context.scene, "ttag_is_loading", False): return
+    if getattr(context.scene, "ttag_is_loading", False): 
+        return
     auto_save_debounced(context.scene)
 
 # =========================================================================
@@ -235,7 +256,8 @@ def update_line_body(self, context):
 
 def validate_item_index(self, context):
     count = len(self.ttag_runtime_items)
-    if count == 0: return
+    if count == 0: 
+        return
     if self.ttag_active_item_index >= count:
         self.ttag_active_item_index = max(0, count - 1)
 
@@ -246,9 +268,14 @@ def frame_to_timecode(frame, fps):
     s = int(total % 60)
     ms = int(round((total - int(total)) * 1000))
     if ms >= 1000:
-        ms = 0; s += 1
-        if s >= 60: s = 0; m += 1
-        if m >= 60: m = 0; h += 1
+        ms = 0
+        s += 1
+        if s >= 60: 
+            s = 0
+            m += 1
+        if m >= 60: 
+            m = 0
+            h += 1
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 def timecode_to_frame(timecode, fps):
@@ -262,9 +289,12 @@ def timecode_to_frame(timecode, fps):
 
 def update_item_index(self, context):
     scene = context.scene
-    if getattr(scene, "ttag_lock_sync", False): return
-    if getattr(scene, "ttag_is_syncing_from_timeline", False): return
-    if not getattr(scene, "ttag_live_sync", False): return
+    if getattr(scene, "ttag_lock_sync", False): 
+        return
+    if getattr(scene, "ttag_is_syncing_from_timeline", False): 
+        return
+    if not getattr(scene, "ttag_live_sync", False): 
+        return
     items = scene.ttag_runtime_items
     idx = scene.ttag_active_item_index
     if 0 <= idx < len(items):
@@ -272,10 +302,13 @@ def update_item_index(self, context):
 
 @persistent
 def ttag_sync_handler(scene):
-    if not getattr(scene, "ttag_live_sync", False): return
-    if getattr(scene, "ttag_lock_sync", False): return
+    if not getattr(scene, "ttag_live_sync", False): 
+        return
+    if getattr(scene, "ttag_lock_sync", False): 
+        return
     items = scene.ttag_runtime_items
-    if len(items) == 0: return
+    if len(items) == 0: 
+        return
     curr = scene.frame_current
     best_idx = -1
     max_frame = -999999
@@ -295,7 +328,6 @@ def ttag_sync_handler(scene):
 # 3. 数据结构
 # =========================================================================
 
-# 行数控制 Get/Set
 def get_line_count(self):
     return len(self.text_lines)
 
@@ -321,7 +353,8 @@ def set_line_count(self, value):
     try:
         if bpy.context and bpy.context.scene:
             auto_save_debounced(bpy.context.scene)
-    except: pass
+    except: 
+        pass
 
 class TTAG_TextLine(PropertyGroup):
     body: StringProperty(name="Text", default="", update=update_line_body)
@@ -355,7 +388,8 @@ class TTAG_OT_Insert_Top_Line(Operator):
     def execute(self, context):
         scene = context.scene
         items = scene.ttag_runtime_items
-        if len(items) == 0: return {'CANCELLED'}
+        if len(items) == 0: 
+            return {'CANCELLED'}
         
         item = items[scene.ttag_active_item_index]
         
@@ -376,15 +410,20 @@ class TTAG_OT_Insert_Newline(Operator):
     def execute(self, context):
         scene = context.scene
         items = scene.ttag_runtime_items
-        if len(items) == 0: return {'CANCELLED'}
+        if len(items) == 0: 
+            return {'CANCELLED'}
         
         item = items[scene.ttag_active_item_index]
         
         insert_pos = 0
         current_len = len(item.text_lines)
-        if self.target_index == -1: insert_pos = current_len
-        else: insert_pos = self.target_index + 1
-        if insert_pos > current_len: insert_pos = current_len
+        if self.target_index == -1: 
+            insert_pos = current_len
+        else: 
+            insert_pos = self.target_index + 1
+            
+        if insert_pos > current_len: 
+            insert_pos = current_len
         
         item.text_lines.add()
         new_idx = len(item.text_lines) - 1
@@ -404,7 +443,8 @@ class TTAG_OT_Remove_Text_Line(Operator):
     def execute(self, context):
         scene = context.scene
         items = scene.ttag_runtime_items
-        if len(items) == 0: return {'CANCELLED'}
+        if len(items) == 0: 
+            return {'CANCELLED'}
         
         item = items[scene.ttag_active_item_index]
         
@@ -423,7 +463,8 @@ class TTAG_OT_Copy_Clipboard(Operator):
     def execute(self, context):
         scene = context.scene
         items = scene.ttag_runtime_items
-        if len(items) == 0: return {'CANCELLED'}
+        if len(items) == 0: 
+            return {'CANCELLED'}
         
         item = items[scene.ttag_active_item_index]
         sync_lines_to_content(item)
@@ -439,10 +480,12 @@ class TTAG_OT_Paste_Clipboard(Operator):
     def execute(self, context):
         scene = context.scene
         items = scene.ttag_runtime_items
-        if len(items) == 0: return {'CANCELLED'}
+        if len(items) == 0: 
+            return {'CANCELLED'}
         
         content = context.window_manager.clipboard
-        if content is None: return {'CANCELLED'}
+        if content is None: 
+            return {'CANCELLED'}
         
         item = items[scene.ttag_active_item_index]
         item.content = content
@@ -512,7 +555,8 @@ class TTAG_OT_Sort_By_Frame(Operator):
     bl_options = {'REGISTER', 'UNDO'}
     def execute(self, context):
         scene = context.scene
-        if not scene.ttag_source_text: return {'CANCELLED'}
+        if not scene.ttag_source_text: 
+            return {'CANCELLED'}
         
         items = scene.ttag_runtime_items
         
@@ -554,10 +598,12 @@ class TTAG_OT_Export_SRT(Operator, ExportHelper):
         for i, item in enumerate(sorted_items):
             sync_lines_to_content(item)
             content = item.content.strip()
-            if not content: continue
+            if not content: 
+                continue
             start_time = frame_to_timecode(item.frame, fps)
             end_frame = item.frame + 24
-            if i < len(sorted_items) - 1: end_frame = sorted_items[i+1].frame
+            if i < len(sorted_items) - 1: 
+                end_frame = sorted_items[i+1].frame
             end_time = frame_to_timecode(end_frame, fps)
             srt_content += f"{counter}\n{start_time} --> {end_time}\n{content}\n\n"
             counter += 1
@@ -586,7 +632,8 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
             return {'CANCELLED'}
             
         filepath = self.filepath
-        if not os.path.exists(filepath): return {'CANCELLED'}
+        if not os.path.exists(filepath): 
+            return {'CANCELLED'}
 
         try:
             with open(filepath, 'r', encoding='utf-8-sig') as f:
@@ -626,7 +673,8 @@ class TTAG_OT_Bake_3D_Text(Operator):
 
     def get_or_create_material(self, name, color):
         mat = bpy.data.materials.get(name)
-        if mat is None: mat = bpy.data.materials.new(name=name)
+        if mat is None: 
+            mat = bpy.data.materials.new(name=name)
         mat.use_nodes = True
         nodes = mat.node_tree.nodes
         bsdf = nodes.get("Principled BSDF")
@@ -646,7 +694,9 @@ class TTAG_OT_Bake_3D_Text(Operator):
             context.view_layer.update()
             
         items = scene.ttag_runtime_items
-        if len(items) == 0: return {'CANCELLED'}
+        if len(items) == 0: 
+            return {'CANCELLED'}
+            
         save_runtime_data_immediate(scene) 
         
         loaded_font = None
@@ -675,7 +725,8 @@ class TTAG_OT_Bake_3D_Text(Operator):
             root_name = f"{root_name}_v{ts}"
         
         target_coll = None
-        if coll_name in bpy.data.collections: target_coll = bpy.data.collections[coll_name]
+        if coll_name in bpy.data.collections: 
+            target_coll = bpy.data.collections[coll_name]
         else:
             target_coll = bpy.data.collections.new(coll_name)
             scene.collection.children.link(target_coll)
@@ -688,7 +739,8 @@ class TTAG_OT_Bake_3D_Text(Operator):
                 for child in children: 
                     bpy.data.objects.remove(child, do_unlink=True)
             
-            if root_empty.name not in target_coll.objects: target_coll.objects.link(root_empty)
+            if root_empty.name not in target_coll.objects: 
+                target_coll.objects.link(root_empty)
         else:
             root_empty = bpy.data.objects.new(root_name, None)
             root_empty.empty_display_type = 'PLAIN_AXES'
@@ -698,7 +750,8 @@ class TTAG_OT_Bake_3D_Text(Operator):
         for i, item in enumerate(sorted_items):
             sync_lines_to_content(item)
             full_text = item.content
-            if not full_text: full_text = " "
+            if not full_text: 
+                full_text = " "
             
             font_curve = bpy.data.curves.new(type="FONT", name=f"TTAG_Data_{item.frame}")
             font_curve.body = full_text
@@ -708,16 +761,36 @@ class TTAG_OT_Bake_3D_Text(Operator):
                 
             font_curve.align_x = scene.ttag_global_align
             font_curve.space_line = scene.ttag_line_spacing
-            
             font_curve.align_y = 'BOTTOM'
             font_curve.extrude = 0.02
+            
+            # --- [适配 Blender 5.1 填充选项] ---
+            if hasattr(font_curve, "fill_mode"):
+                try: 
+                    font_curve.fill_mode = 'BOTH'
+                except Exception: 
+                    pass
+                
+            if hasattr(font_curve, "fill_solver"):
+                try: 
+                    font_curve.fill_solver = 'CDT'
+                except Exception: 
+                    pass
+                
+            if hasattr(font_curve, "fill_rule"):
+                try: 
+                    font_curve.fill_rule = 'EVEN_ODD'
+                except Exception: 
+                    pass
             
             obj = bpy.data.objects.new(name=f"TTAG_{item.frame}", object_data=font_curve)
             target_coll.objects.link(obj)
             
             mat = self.get_or_create_material(f"TTAG_Mat_{safe_name}_{item.frame}", item.color)
-            if obj.data.materials: obj.data.materials[0] = mat
-            else: obj.data.materials.append(mat)
+            if obj.data.materials: 
+                obj.data.materials[0] = mat
+            else: 
+                obj.data.materials.append(mat)
             
             obj.parent = root_empty
             obj.rotation_euler.x = math.radians(90)
@@ -745,7 +818,8 @@ class TTAG_OT_Bake_3D_Text(Operator):
             
             if obj.animation_data and obj.animation_data.action:
                 for fcurve in obj.animation_data.action.fcurves:
-                    for kf in fcurve.keyframe_points: kf.interpolation = 'CONSTANT'
+                    for kf in fcurve.keyframe_points: 
+                        kf.interpolation = 'CONSTANT'
         
         if context.view_layer:
             context.view_layer.update()
@@ -762,7 +836,9 @@ class TTAG_OT_Bake_Timeline_Markers(Operator):
     def execute(self, context):
         scene = context.scene
         items = scene.ttag_runtime_items
-        if len(items) == 0: return {'CANCELLED'}
+        if len(items) == 0: 
+            return {'CANCELLED'}
+            
         save_runtime_data_immediate(scene) 
         
         # 时间轴标记处理
@@ -774,16 +850,13 @@ class TTAG_OT_Bake_Timeline_Markers(Operator):
 
         sorted_items = sorted(items, key=lambda x: x.frame)
         for item in sorted_items:
-            # --- 时间轴标记生成逻辑 ---
             m_name = item.summary if item.summary else f"F{item.frame}"
             m_frame = item.frame
             
-            # 如果不覆盖，则检测冲突并顺延
             if not scene.ttag_overwrite_markers:
                 while m_frame in occupied_frames:
                     m_frame += 1
             
-            # 添加标记并记录位置
             try:
                 scene.timeline_markers.new(name=m_name, frame=m_frame)
                 occupied_frames.add(m_frame)
@@ -799,27 +872,23 @@ class TTAG_OT_Bake_Timeline_Markers(Operator):
 
 class TTAG_UL_List(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        # [V39.6 核心修复] 使用多级 split 加上 empty column 强制生效百分比留白，同时保留默认背景
-        
         # 1. 整体划分为: 左(12%给颜色) | 右(88%给其他)
         split_main = layout.split(factor=0.12)
         split_main.prop(item, "color", text="", icon_only=True)
         
         # 2. 将刚才的右侧(88%)，再划分为: 左(35%给帧数) | 右(65%给剩余)
         split_right = split_main.split(factor=0.35)
-        # 注意: 移除了 emboss=False，恢复原生输入框，支持鼠标拖拽蓝色高亮
         split_right.prop(item, "frame", text="")
         
         # 3. 将最后的剩余部分(65%)，再划分为: 左(85%给标签名) | 右(15%给纯留白安全区)
         split_summary = split_right.split(factor=0.85)
         split_summary.prop(item, "summary", text="")
         
-        # 【收缩逻辑的关键】必须在这个最后的右侧槽位放入一个空的 column。
-        # 否则 Blender UI 引擎会自动忽略 split 设定，让 summary 强行拉伸填满整行。
+        # 【收缩逻辑的关键】放入空的 column 防止被拉伸
         split_summary.column()
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V39.6"
+    bl_label = "Timeline Tags Pro V41.0"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -870,14 +939,16 @@ class TTAG_PT_Panel(Panel):
         # --- 4. Edit Area ---
         if scene.ttag_active_item_index >= 0 and len(scene.ttag_runtime_items) > 0:
             safe_idx = scene.ttag_active_item_index
-            if safe_idx >= len(scene.ttag_runtime_items): safe_idx = len(scene.ttag_runtime_items) - 1
-            if safe_idx < 0: safe_idx = 0
+            if safe_idx >= len(scene.ttag_runtime_items): 
+                safe_idx = len(scene.ttag_runtime_items) - 1
+            if safe_idx < 0: 
+                safe_idx = 0
             
             item = scene.ttag_runtime_items[safe_idx]
             box = layout.box()
             col = box.column(align=True)
             
-            # [V39.1] 标题栏新增行数控制
+            # 标题栏新增行数控制
             row_header = col.row(align=True)
             row_header.label(text="内容编辑 (Content Edit):", icon='TEXT')
             row_header.prop(item, "line_count", text="行数")
@@ -886,7 +957,8 @@ class TTAG_PT_Panel(Panel):
             row_tools.scale_y = 1.2
             row_tools.operator("ttag.copy_clipboard", text="复制", icon='COPYDOWN')
             row_tools.operator("ttag.paste_clipboard", text="粘贴", icon='PASTEDOWN')
-            # [V39.3] 新增：置顶插入空行按钮
+            
+            # 新增：置顶插入空行按钮
             row_tools.operator("ttag.insert_top_line", text="", icon='ADD')
             
             col.separator()
@@ -955,7 +1027,8 @@ classes = (
 )
 
 def register():
-    for cls in classes: bpy.utils.register_class(cls)
+    for cls in classes: 
+        bpy.utils.register_class(cls)
     
     bpy.types.Scene.ttag_source_text = PointerProperty(
         name="Data Source",
@@ -969,7 +1042,8 @@ def register():
     bpy.types.Scene.ttag_is_loading = BoolProperty(default=False)
     
     bpy.types.Scene.ttag_active_item_index = IntProperty(
-        min=0, update=update_item_index,
+        min=0, 
+        update=update_item_index,
         description="当前激活的标签索引"
     )
     
@@ -995,13 +1069,15 @@ def register():
     )
     
     bpy.types.Scene.ttag_is_syncing_from_timeline = BoolProperty(default=False)
+    
     bpy.types.Scene.ttag_lock_sync = BoolProperty(default=False)
     
     bpy.types.Scene.ttag_default_color = FloatVectorProperty(
         name="Default Color", 
         subtype='COLOR', 
         default=(1.0, 1.0, 1.0), 
-        min=0.0, max=1.0,
+        min=0.0, 
+        max=1.0,
         update=update_settings
     )
     
@@ -1030,11 +1106,16 @@ def register():
         update=update_settings
     )
 
-    if ttag_sync_handler not in bpy.app.handlers.frame_change_post: bpy.app.handlers.frame_change_post.append(ttag_sync_handler)
+    if ttag_sync_handler not in bpy.app.handlers.frame_change_post: 
+        bpy.app.handlers.frame_change_post.append(ttag_sync_handler)
 
 def unregister():
-    if ttag_sync_handler in bpy.app.handlers.frame_change_post: bpy.app.handlers.frame_change_post.remove(ttag_sync_handler)
-    for cls in reversed(classes): bpy.utils.unregister_class(cls)
+    if ttag_sync_handler in bpy.app.handlers.frame_change_post: 
+        bpy.app.handlers.frame_change_post.remove(ttag_sync_handler)
+        
+    for cls in reversed(classes): 
+        bpy.utils.unregister_class(cls)
+        
     del bpy.types.Scene.ttag_source_text
     del bpy.types.Scene.ttag_runtime_items
     del bpy.types.Scene.ttag_is_loading
