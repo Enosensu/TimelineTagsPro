@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V41.0",
+    "name": "Timeline Tags Pro V44.0",
     "author": "Dev_BlenderPy",
-    "version": (41, 0),
+    "version": (44, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "稳定回归版：基于 V39.6 架构，精准注入 Blender 5.1 的 CDT 与 EVEN_ODD 填充适配。",
+    "description": "完美联动版：一键重命名时同步修改对应的时间轴标记名称，保持双向绑定的持续有效。",
     "category": "Animation",
 }
 
@@ -90,7 +90,7 @@ def save_runtime_data_immediate(scene):
     }
 
     final_payload = {
-        "version": "V41.0",
+        "version": "V44.0",
         "settings": settings_dict,
         "data": data_list
     }
@@ -421,7 +421,7 @@ class TTAG_OT_Insert_Newline(Operator):
             insert_pos = current_len
         else: 
             insert_pos = self.target_index + 1
-            
+
         if insert_pos > current_len: 
             insert_pos = current_len
         
@@ -460,6 +460,7 @@ class TTAG_OT_Copy_Clipboard(Operator):
     bl_idname = "ttag.copy_clipboard"
     bl_label = "复制"
     bl_description = "复制内容"
+    
     def execute(self, context):
         scene = context.scene
         items = scene.ttag_runtime_items
@@ -477,6 +478,7 @@ class TTAG_OT_Paste_Clipboard(Operator):
     bl_label = "粘贴"
     bl_description = "粘贴内容"
     bl_options = {'REGISTER', 'UNDO'}
+    
     def execute(self, context):
         scene = context.scene
         items = scene.ttag_runtime_items
@@ -516,11 +518,23 @@ class TTAG_OT_List_Action(Operator):
             if self.action == "ADD":
                 item = items.add()
                 item.frame = scene.frame_current
-                item.summary = f"F{item.frame}"
+                
+                # 规范化标签命名，并自动防冲突
+                base_name = f"F_{scene.frame_current}"
+                existing_names = {it.summary for it in items if it != item}
+                
+                unique_name = base_name
+                counter = 1
+                while unique_name in existing_names:
+                    unique_name = f"{base_name}_{counter}"
+                    counter += 1
+                
+                item.summary = unique_name
                 item.color = scene.ttag_default_color
                 item.content = "" 
                 sync_content_to_lines(item) 
                 scene.ttag_active_item_index = list_len 
+                
             elif self.action == "REMOVE":
                 if list_len > 0:
                     items.remove(idx)
@@ -543,6 +557,7 @@ class TTAG_OT_Reload_From_Text(Operator):
     bl_label = "重载"
     bl_description = "强制从文本块重新读取数据 (自动修复转义符)"
     bl_options = {'REGISTER', 'UNDO'}
+    
     def execute(self, context):
         load_runtime_data(context.scene, operator=self)
         self.report({'INFO'}, "数据已加载")
@@ -553,13 +568,13 @@ class TTAG_OT_Sort_By_Frame(Operator):
     bl_label = "排序"
     bl_description = "按帧号排序"
     bl_options = {'REGISTER', 'UNDO'}
+    
     def execute(self, context):
         scene = context.scene
         if not scene.ttag_source_text: 
             return {'CANCELLED'}
         
         items = scene.ttag_runtime_items
-        
         scene.ttag_lock_sync = True 
         try:
             n = len(items)
@@ -573,6 +588,52 @@ class TTAG_OT_Sort_By_Frame(Operator):
             save_runtime_data_immediate(scene)
         finally:
             scene.ttag_lock_sync = False
+        return {'FINISHED'}
+
+# [V44.0 修改]：一键按帧号重命名所有标签，并同步重命名对应的时间轴标记
+class TTAG_OT_Rename_By_Frame(Operator):
+    bl_idname = "ttag.rename_by_frame"
+    bl_label = "按帧号重命名"
+    bl_description = "根据当前插件所在的帧数重新生成名称(F_xxx)，并同步修改对应时间轴标记的名称"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        items = scene.ttag_runtime_items
+        if len(items) == 0: 
+            return {'CANCELLED'}
+        
+        used_names = set()
+        scene.ttag_lock_sync = True
+        try:
+            for item in items:
+                # 记录旧名称，用来寻找时间轴上的标记
+                old_name = item.summary if item.summary else f"F_{item.frame}"
+                marker = scene.timeline_markers.get(old_name)
+                
+                # 计算新的防冲突名称
+                base_name = f"F_{item.frame}"
+                unique_name = base_name
+                counter = 1
+                
+                while unique_name in used_names:
+                    unique_name = f"{base_name}_{counter}"
+                    counter += 1
+                    
+                # 1. 更改插件内标签名称
+                item.summary = unique_name
+                
+                # 2. 同步更改对应的时间轴标记名称 (仅改名称，不改帧数位置)
+                if marker:
+                    marker.name = unique_name
+                
+                used_names.add(unique_name)
+                
+            save_runtime_data_immediate(scene)
+            self.report({'INFO'}, "已根据实际帧数重新规范所有标签及对应时间轴标记的名称")
+        finally:
+            scene.ttag_lock_sync = False
+            
         return {'FINISHED'}
 
 class TTAG_OT_Export_SRT(Operator, ExportHelper):
@@ -657,7 +718,7 @@ class TTAG_OT_Import_SRT(Operator, ImportHelper):
             item = scene.ttag_runtime_items.add()
             item.frame = frame
             item.content = content
-            item.summary = f"F{frame}"
+            item.summary = f"F_{frame}"
             item.color = scene.ttag_default_color
             sync_content_to_lines(item) 
             
@@ -764,7 +825,7 @@ class TTAG_OT_Bake_3D_Text(Operator):
             font_curve.align_y = 'BOTTOM'
             font_curve.extrude = 0.02
             
-            # --- [适配 Blender 5.1 填充选项] ---
+            # --- [适配 Blender 5.1 填充选项, 安全注入] ---
             if hasattr(font_curve, "fill_mode"):
                 try: 
                     font_curve.fill_mode = 'BOTH'
@@ -850,7 +911,8 @@ class TTAG_OT_Bake_Timeline_Markers(Operator):
 
         sorted_items = sorted(items, key=lambda x: x.frame)
         for item in sorted_items:
-            m_name = item.summary if item.summary else f"F{item.frame}"
+            # --- 时间轴标记生成逻辑 ---
+            m_name = item.summary if item.summary else f"F_{item.frame}"
             m_frame = item.frame
             
             if not scene.ttag_overwrite_markers:
@@ -865,6 +927,58 @@ class TTAG_OT_Bake_Timeline_Markers(Operator):
 
         self.report({'INFO'}, "时间轴标记已添加")
         return {'FINISHED'}
+
+class TTAG_OT_Sync_From_Timeline(Operator):
+    bl_idname = "ttag.sync_from_timeline"
+    bl_label = "从时间轴同步帧"
+    bl_description = "根据时间轴标记(同名)的当前位置，反向更新插件列表中标签的帧数"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        items = scene.ttag_runtime_items
+        if len(items) == 0: 
+            return {'CANCELLED'}
+
+        # 锁定自动同步，防止修改过程中列表项与时间轴乱跳
+        scene.ttag_lock_sync = True
+        try:
+            updated_count = 0
+            for item in items:
+                # 使用标签的名称作为匹配标准
+                target_name = item.summary if item.summary else f"F_{item.frame}"
+                
+                # 尝试在 Blender 的时间轴标记中查找同名标记
+                marker = scene.timeline_markers.get(target_name)
+                
+                # 如果找到，且帧数有变，则同步帧数
+                if marker and marker.frame != item.frame:
+                    item.frame = marker.frame
+                    updated_count += 1
+                    
+            if updated_count > 0:
+                # 因为帧数可能发生了改变，重新按帧号对列表进行排序
+                n = len(items)
+                for i in range(n):
+                    min_idx = i
+                    for j in range(i + 1, n):
+                        if items[j].frame < items[min_idx].frame:
+                            min_idx = j
+                    if min_idx != i:
+                        items.move(min_idx, i)
+                        
+                # 立即保存修改后的数据
+                save_runtime_data_immediate(scene)
+                self.report({'INFO'}, f"成功同步了 {updated_count} 个标签的帧数")
+            else:
+                self.report({'INFO'}, "没有检测到需要同步的改动")
+                
+        finally:
+            # 解除同步锁定
+            scene.ttag_lock_sync = False
+
+        return {'FINISHED'}
+
 
 # =========================================================================
 # 5. UI PANEL
@@ -888,7 +1002,7 @@ class TTAG_UL_List(UIList):
         split_summary.column()
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V41.0"
+    bl_label = "Timeline Tags Pro V44.0"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -927,6 +1041,10 @@ class TTAG_PT_Panel(Panel):
         
         col = row.column(align=True)
         col.operator("ttag.sort_by_frame", text="", icon='SORT_ASC')
+        
+        # [V43.0] 按帧重命名按钮
+        col.operator("ttag.rename_by_frame", text="", icon='TEXT')
+        
         col.separator()
         col.operator("ttag.list_action", icon='ADD', text="").action = "ADD"
         col.operator("ttag.list_action", icon='REMOVE', text="").action = "REMOVE"
@@ -997,11 +1115,16 @@ class TTAG_PT_Panel(Panel):
         sub_right.prop(scene, "ttag_global_align", text="", expand=True)
         sub_right.prop(scene, "ttag_overwrite_markers", text="", icon='MARKER', toggle=True)
         
-        # Row 3
-        row = box.row(align=True)
-        row.scale_y = 1.2
-        row.operator("ttag.bake_3d_text", icon='SHADING_BBOX', text="烘焙 3D 文字")
-        row.operator("ttag.bake_timeline_markers", icon='MARKER', text="添加时间轴标签")
+        # Row 3: 烘焙 3D 文字独占一行
+        row_bake = box.row(align=True)
+        row_bake.scale_y = 1.2
+        row_bake.operator("ttag.bake_3d_text", icon='SHADING_BBOX', text="烘焙 3D 文字")
+        
+        # Row 4: 时间轴同步
+        row_sync = box.row(align=True)
+        row_sync.scale_y = 1.2
+        row_sync.operator("ttag.bake_timeline_markers", icon='MARKER', text="添加时间轴标签")
+        row_sync.operator("ttag.sync_from_timeline", icon='FILE_REFRESH', text="从时间轴同步标签帧")
 
 # =========================================================================
 # 6. 注册
@@ -1020,8 +1143,10 @@ classes = (
     TTAG_OT_Paste_Clipboard, 
     TTAG_OT_Reload_From_Text,
     TTAG_OT_Sort_By_Frame, 
+    TTAG_OT_Rename_By_Frame, 
     TTAG_OT_Bake_3D_Text,
     TTAG_OT_Bake_Timeline_Markers,
+    TTAG_OT_Sync_From_Timeline, 
     TTAG_UL_List, 
     TTAG_PT_Panel,
 )
