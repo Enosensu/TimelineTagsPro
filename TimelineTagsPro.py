@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Timeline Tags Pro V44.0",
+    "name": "Timeline Tags Pro V45.0",
     "author": "Dev_BlenderPy",
-    "version": (44, 0),
+    "version": (45, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Tags Pro",
-    "description": "完美联动版：一键重命名时同步修改对应的时间轴标记名称，保持双向绑定的持续有效。",
+    "description": "智能插入版：添加新标签时，自动根据当前帧数将其插入到列表的对应时间顺序位置。",
     "category": "Animation",
 }
 
@@ -90,7 +90,7 @@ def save_runtime_data_immediate(scene):
     }
 
     final_payload = {
-        "version": "V44.0",
+        "version": "V45.0",
         "settings": settings_dict,
         "data": data_list
     }
@@ -516,11 +516,14 @@ class TTAG_OT_List_Action(Operator):
         scene.ttag_lock_sync = True
         try:
             if self.action == "ADD":
+                new_frame = scene.frame_current
+                
+                # [V45.0 修改] 1. 先将项目添加到列表末尾
                 item = items.add()
-                item.frame = scene.frame_current
+                item.frame = new_frame
                 
                 # 规范化标签命名，并自动防冲突
-                base_name = f"F_{scene.frame_current}"
+                base_name = f"F_{new_frame}"
                 existing_names = {it.summary for it in items if it != item}
                 
                 unique_name = base_name
@@ -533,7 +536,19 @@ class TTAG_OT_List_Action(Operator):
                 item.color = scene.ttag_default_color
                 item.content = "" 
                 sync_content_to_lines(item) 
-                scene.ttag_active_item_index = list_len 
+                
+                # [V45.0 修改] 2. 智能寻找插入位置（保持列表时间顺序）
+                new_index = len(items) - 1 # 默认在最后
+                for i in range(len(items) - 1):
+                    if items[i].frame > new_frame:
+                        new_index = i
+                        break
+                
+                # [V45.0 修改] 3. 移动到对应位置并激活
+                if new_index < len(items) - 1:
+                    items.move(len(items) - 1, new_index)
+                
+                scene.ttag_active_item_index = new_index
                 
             elif self.action == "REMOVE":
                 if list_len > 0:
@@ -590,7 +605,6 @@ class TTAG_OT_Sort_By_Frame(Operator):
             scene.ttag_lock_sync = False
         return {'FINISHED'}
 
-# [V44.0 修改]：一键按帧号重命名所有标签，并同步重命名对应的时间轴标记
 class TTAG_OT_Rename_By_Frame(Operator):
     bl_idname = "ttag.rename_by_frame"
     bl_label = "按帧号重命名"
@@ -1002,7 +1016,7 @@ class TTAG_UL_List(UIList):
         split_summary.column()
 
 class TTAG_PT_Panel(Panel):
-    bl_label = "Timeline Tags Pro V44.0"
+    bl_label = "Timeline Tags Pro V45.0"
     bl_idname = "TTAG_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -1042,7 +1056,7 @@ class TTAG_PT_Panel(Panel):
         col = row.column(align=True)
         col.operator("ttag.sort_by_frame", text="", icon='SORT_ASC')
         
-        # [V43.0] 按帧重命名按钮
+        # 按帧重命名按钮
         col.operator("ttag.rename_by_frame", text="", icon='TEXT')
         
         col.separator()
