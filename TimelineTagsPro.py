@@ -1239,10 +1239,9 @@ class TTAG_PT_Panel(Panel):
         row.operator("ttag.export_srt", icon='TEXT', text="导出 SRT")
         row.operator("ttag.import_srt", icon='IMPORT', text="导入 SRT")
         
-        # Row 2: 字体路径输入框 + 文件浏览按钮，单独占满一行
+        # Row 2: 字体路径输入框 + 文件浏览按钮，占满整行
         row = box.row(align=True)
-        sub = row.split(factor=0.78, align=True)
-        sub.prop(scene, "ttag_font_path", text="")
+        row.prop(scene, "ttag_font_path", text="", expand=True)
 
         # Row 3: 行距、覆盖、对齐、标记覆盖等控件，另起一行
         row = box.row(align=True)
@@ -1358,8 +1357,8 @@ def register():
     )
     
     bpy.types.Scene.ttag_font_path = StringProperty(
-        name="烘焙字体", 
-        description="烘焙字体文件路径", 
+        name="烘焙字体",
+        description="烘焙字体文件路径；点击右侧文件夹图标可在系统文件浏览器中选择字体文件",
         subtype='FILE_PATH',
         update=update_settings
     )
