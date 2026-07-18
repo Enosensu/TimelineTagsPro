@@ -968,23 +968,22 @@ class TTAG_OT_Bake_3D_Text(Operator):
             else:
                 obj.data.materials.append(mat)
 
-            # 【V46.0 修复】parent + matrix_parent_inverse 必须成对设置，
-            # 且 location/rotation 在 parent 之前赋值。
-            # 旧实现：location=(0,0,0) 在前，parent 赋值在后，
-            # 但未设置 matrix_parent_inverse，导致后续移动 root 时
-            # 子物体世界矩阵依赖一个隐式的、可能为垃圾值的 parent-inverse 矩阵，
-            # depgraph 求值时命中野指针 -> GPU 驱动 TDR -> BSOD。
+            # 【V46.1 修复】parent + matrix_parent_inverse 成对设置，
+            # location/rotation 在 parent 之前赋值。
+            # 旧 V45.0：未设 matrix_parent_inverse，依赖隐性值，
+            # depgraph 求值命中野指针 -> GPU 驱动 TDR -> BSOD。
+            # 旧 V46.0：matrix_parent_inverse = root.matrix_world.inverted()，
+            # 把 root 的"烘焙时世界矩阵"永久冻结进每个子物体的 parent_inverse。
+            # 之后用户移动/缩放 root，子物体仍用旧 inverse，
+            # 表现为"再次烘焙时 3D 文字不跟空物体，留在原位置"。
+            # V46.1 正解：parent_inverse 始终用单位矩阵，
+            # 子物体世界位置 = root.matrix_world @ local_matrix（local = loc/rot/scale）。
+            # root 移到哪、缩到几，子物体就整体跟到哪、同比例缩——真正"依附"。
+            # 同时无 .inverted() 调用，消除隐性垃圾矩阵 -> depgraph 野指针路径（兼保 V46.0 防崩）。
             obj.location = (0, 0, 0)
             obj.rotation_euler.x = math.radians(90)
             obj.parent = root_empty
-            # 显式设 matrix_parent_inverse = root.matrix_world.inverted()，
-            # 使子物体世界位置 = parent.matrix_world @ matrix_parent_inverse @ local_matrix
-            # 等价于 "保持子物体当前世界变换不变"，这是 Blender 官方推荐做法。
-            try:
-                obj.matrix_parent_inverse = root_empty.matrix_world.inverted()
-            except Exception:
-                # matrix_world 在 empty 刚 link 后可能未刷新，退化为单位矩阵
-                obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+            obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
 
             # 【V46.0 修复】集中、有序地插帧，并立即改插值类型
             self._apply_visibility_keyframes_safe(obj, item, sorted_items, i)
