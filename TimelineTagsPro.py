@@ -780,17 +780,21 @@ class TTAG_OT_Bake_3D_Text(Operator):
     bl_options = {'REGISTER', 'UNDO'} 
 
     def get_or_create_material(self, name, color):
+        # 【V46.2 修复】材质名已按颜色聚类（见调用点），同名即同色。
+        # 复用已有材质时直接返回，不再重设 Base Color / Emission，
+        # 避免后一条标签的颜色覆盖前一条（共用材质时颜色保持首次创建值）。
+        # 仅新建材质时才设色。
         mat = bpy.data.materials.get(name)
-        if mat is None: 
-            mat = bpy.data.materials.new(name=name)
+        if mat is not None:
+            return mat
+
+        mat = bpy.data.materials.new(name=name)
         mat.use_nodes = True
         nodes = mat.node_tree.nodes
-        bsdf = nodes.get("Principled BSDF")
-        if not bsdf:
-            nodes.clear()
-            bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
-            output = nodes.new(type='ShaderNodeOutputMaterial')
-            mat.node_tree.links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+        nodes.clear()
+        bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+        output = nodes.new(type='ShaderNodeOutputMaterial')
+        mat.node_tree.links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
         bsdf.inputs['Base Color'].default_value = (color[0], color[1], color[2], 1.0)
         bsdf.inputs['Emission Color'].default_value = (color[0], color[1], color[2], 1.0)
         bsdf.inputs['Emission Strength'].default_value = 0.5
@@ -962,7 +966,16 @@ class TTAG_OT_Bake_3D_Text(Operator):
             obj = bpy.data.objects.new(name=f"TTAG_{item.frame}", object_data=font_curve)
             target_coll.objects.link(obj)
 
-            mat = self.get_or_create_material(f"TTAG_Mat_{safe_name}_{item.frame}", item.color)
+            # 【V46.2 修复】材质名按颜色聚类，不再带帧号：
+            # 同色标签 → 同 hex 名 → bpy.data.materials.get 命中 → 复用，
+            # 不再每条标签造一个完全相同的新材质。
+            col = item.color
+            color_hex = "{:02X}{:02X}{:02X}".format(
+                max(0, min(255, int(round(col[0] * 255)))),
+                max(0, min(255, int(round(col[1] * 255)))),
+                max(0, min(255, int(round(col[2] * 255)))),
+            )
+            mat = self.get_or_create_material(f"TTAG_Mat_{safe_name}_{color_hex}", item.color)
             if obj.data.materials:
                 obj.data.materials[0] = mat
             else:
